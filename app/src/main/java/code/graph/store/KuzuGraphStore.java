@@ -42,7 +42,7 @@ public class KuzuGraphStore implements GraphStore {
                 "CREATE REL TABLE IF NOT EXISTS CONTAINS (FROM Package TO Class, FROM Package TO Interface, FROM Package TO Enum, FROM Package TO Record, FROM Class TO Method, FROM Class TO Constructor, FROM Class TO Field, FROM Interface TO Method, FROM Interface TO Field)",
                 "CREATE REL TABLE IF NOT EXISTS EXTENDS (FROM Class TO Class, FROM Interface TO Interface)",
                 "CREATE REL TABLE IF NOT EXISTS IMPLEMENTS (FROM Class TO Interface)",
-                "CREATE REL TABLE IF NOT EXISTS CALLS (FROM Method TO Method, lineNumber INT64)",
+                "CREATE REL TABLE IF NOT EXISTS CALLS (FROM Method TO Method, FROM Constructor TO Method, lineNumber INT64, resolved BOOLEAN)",
                 "CREATE REL TABLE IF NOT EXISTS RETURNS (FROM Method TO Class, FROM Method TO Interface, FROM Method TO Enum, FROM Method TO Record)",
                 "CREATE REL TABLE IF NOT EXISTS HAS_PARAMETER (FROM Method TO Parameter, FROM Constructor TO Parameter)",
                 "CREATE REL TABLE IF NOT EXISTS OF_TYPE (FROM Field TO Class, FROM Field TO Interface, FROM Field TO Enum, FROM Field TO Record, FROM Parameter TO Class, FROM Parameter TO Interface, FROM Parameter TO Enum, FROM Parameter TO Record)",
@@ -52,7 +52,7 @@ public class KuzuGraphStore implements GraphStore {
                 // CPG-specific relationship tables
                 "CREATE REL TABLE IF NOT EXISTS SOURCE_FILE (FROM Class TO File, FROM Interface TO File, FROM Enum TO File, FROM Record TO File, FROM AnnotationType TO File)",
                 "CREATE REL TABLE IF NOT EXISTS AST_CHILD (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement, order INT64)",
-                "CREATE REL TABLE IF NOT EXISTS CFG_NEXT (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement)",
+                "CREATE REL TABLE IF NOT EXISTS CFG_NEXT (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement, backEdge BOOLEAN)",
                 "CREATE REL TABLE IF NOT EXISTS DATA_FLOW (FROM Statement TO Statement, variable STRING)"
         };
 
@@ -155,7 +155,19 @@ public class KuzuGraphStore implements GraphStore {
             }
         }
 
-        return String.format("KuzuDB graph: %d nodes", totalNodes);
+        // Count CALLS relationships
+        long callsCount = 0;
+        try {
+            var result = connection.query("MATCH ()-[r:CALLS]->() RETURN count(r) AS c");
+            if (result.hasNext()) {
+                FlatTuple tuple = result.getNext();
+                callsCount = tuple.getValue(0).<Long>getValue();
+            }
+            result.close();
+        } catch (Exception ignored) {
+        }
+
+        return String.format("KuzuDB graph: %d nodes, %d CALLS edges", totalNodes, callsCount);
     }
 
     @Override
@@ -189,7 +201,8 @@ public class KuzuGraphStore implements GraphStore {
 
     private static String escapeString(String value) {
         if (value == null) return "";
-        return value.replace("'", "\\'").replace("\\", "\\\\");
+        // Escape backslashes first, then single quotes
+        return value.replace("\\", "\\\\").replace("'", "\\'");
     }
 
     private static String formatValue(Object value) {

@@ -91,13 +91,20 @@ public class JavaSourceParser {
 
         System.out.printf("Found %d Java files to parse%n", javaFiles.size());
 
+        // First pass: collect all internal type names for call graph filtering
+        java.util.Set<String> internalTypes = new java.util.HashSet<>();
+        for (Path file : javaFiles) {
+            collectInternalTypes(file, internalTypes);
+        }
+
+        // Second pass: full parsing with call graph
         int skipped = 0;
         for (Path file : javaFiles) {
             if (hashCache != null && !hashCache.hasChanged(file)) {
                 skipped++;
                 continue;
             }
-            parseFile(file, graph);
+            parseFile(file, graph, internalTypes);
         }
 
         if (skipped > 0) {
@@ -109,6 +116,29 @@ public class JavaSourceParser {
                 resolvedCalls, unresolvedCalls);
 
         return graph;
+    }
+
+    /**
+     * Collect all type names from a Java file for internal call graph filtering.
+     */
+    private void collectInternalTypes(Path file, java.util.Set<String> internalTypes) {
+        try {
+            ParseResult<CompilationUnit> result = parser.parse(file);
+            if (result.isSuccessful() && result.getResult().isPresent()) {
+                CompilationUnit cu = result.getResult().get();
+                String packageName = cu.getPackageDeclaration()
+                        .map(pd -> pd.getNameAsString())
+                        .orElse("");
+                
+                cu.findAll(TypeDeclaration.class).forEach(td -> {
+                    String typeName = packageName.isEmpty() 
+                            ? td.getNameAsString() 
+                            : packageName + "." + td.getNameAsString();
+                    internalTypes.add(typeName);
+                });
+            }
+        } catch (IOException ignored) {
+        }
     }
 
     private List<Path> collectJavaFiles(Path root) throws IOException {
@@ -125,12 +155,12 @@ public class JavaSourceParser {
         return files;
     }
 
-    private void parseFile(Path file, CodeGraph graph) {
+    private void parseFile(Path file, CodeGraph graph, java.util.Set<String> internalTypes) {
         try {
             ParseResult<CompilationUnit> result = parser.parse(file);
             if (result.isSuccessful() && result.getResult().isPresent()) {
                 CompilationUnit cu = result.getResult().get();
-                cu.accept(new CodeGraphVisitor(graph), null);
+                cu.accept(new CodeGraphVisitor(graph, internalTypes), null);
             } else {
                 System.err.printf("Failed to parse %s: %s%n", file,
                         result.getProblems().stream()
@@ -148,9 +178,11 @@ public class JavaSourceParser {
     private class CodeGraphVisitor extends VoidVisitorAdapter<Void> {
 
         private final CodeGraph graph;
+        private final java.util.Set<String> internalTypes;
 
-        CodeGraphVisitor(CodeGraph graph) {
+        CodeGraphVisitor(CodeGraph graph, java.util.Set<String> internalTypes) {
             this.graph = graph;
+            this.internalTypes = internalTypes;
         }
 
         @Override
@@ -374,38 +406,83 @@ public class JavaSourceParser {
 
         @Override
         public void visit(MethodCallExpr call, Void arg) {
-            // Find the enclosing method — skip calls outside methods (e.g. field initializers)
+            // Find the enclosing method or constructor
+            String callerId = null;
             var enclosingMethod = call.findAncestor(MethodDeclaration.class);
-            if (enclosingMethod.isEmpty()) {
+            var enclosingCtor = call.findAncestor(ConstructorDeclaration.class);
+
+            if (enclosingMethod.isPresent()) {
+                String enclosingType = findContainingType(enclosingMethod.get());
+                String enclosingSig = buildMethodSignature(enclosingMethod.get());
+                callerId = "method:" + enclosingType + "." + enclosingSig;
+            } else if (enclosingCtor.isPresent()) {
+                String enclosingType = findContainingType(enclosingCtor.get());
+                String ctorSig = enclosingCtor.get().getNameAsString() + "(" +
+                        enclosingCtor.get().getParameters().stream()
+                                .map(p -> p.getTypeAsString())
+                                .collect(Collectors.joining(",")) + ")";
+                callerId = "ctor:" + enclosingType + "." + ctorSig;
+            } else {
+                // Skip calls outside methods/constructors (e.g. field initializers)
                 super.visit(call, arg);
                 return;
             }
 
-            String enclosingType = findContainingType(enclosingMethod.get());
-            String enclosingSig = buildMethodSignature(enclosingMethod.get());
-            String callerId = "method:" + enclosingType + "." + enclosingSig;
             int line = call.getBegin().map(p -> p.line).orElse(-1);
 
             // Try full symbol resolution first
             try {
                 ResolvedMethodDeclaration resolved = call.resolve();
                 String targetQualified = resolved.getQualifiedName();
+                // Use simple type names to match how method nodes are created
                 String targetSig = resolved.getName() + "(" +
                         java.util.stream.IntStream.range(0, resolved.getNumberOfParams())
-                                .mapToObj(i -> resolved.getParam(i).describeType())
+                                .mapToObj(i -> simplifyTypeName(resolved.getParam(i).describeType()))
                                 .collect(Collectors.joining(",")) + ")";
-                String targetId = "method:" + targetQualified.substring(0, targetQualified.lastIndexOf('.')) + "." + targetSig;
+                String targetClassName = targetQualified.substring(0, targetQualified.lastIndexOf('.'));
+                String targetId = "method:" + targetClassName + "." + targetSig;
 
-                graph.addRelationship(new CodeRelationship(callerId, targetId, RelationshipType.CALLS)
-                        .withProperty("lineNumber", line)
-                        .withProperty("resolved", true));
-                resolvedCalls++;
+                // Only create CALLS edge if target class is internal (from source code)
+                // This filters out JDK, Spring, and other library calls
+                if (internalTypes.contains(targetClassName)) {
+                    graph.addRelationship(new CodeRelationship(callerId, targetId, RelationshipType.CALLS)
+                            .withProperty("lineNumber", line)
+                            .withProperty("resolved", true));
+                    resolvedCalls++;
+                }
+                // Skip external library calls - don't create nodes or edges
             } catch (Exception e) {
                 // Best-effort: infer target from scope expression and method name
                 bestEffortCall(call, callerId, line);
             }
 
             super.visit(call, arg);
+        }
+
+        /**
+         * Simplify a fully qualified type name to its simple name.
+         * e.g., "java.lang.String" -> "String", "java.util.List<java.lang.String>" -> "List<String>"
+         */
+        private String simplifyTypeName(String typeName) {
+            // Handle generics: List<java.lang.String> -> List<String>
+            if (typeName.contains("<")) {
+                int genericStart = typeName.indexOf('<');
+                String base = simplifyTypeName(typeName.substring(0, genericStart));
+                String genericPart = typeName.substring(genericStart + 1, typeName.lastIndexOf('>'));
+                String[] genericArgs = genericPart.split(",");
+                String simplifiedGenerics = java.util.Arrays.stream(genericArgs)
+                        .map(String::trim)
+                        .map(this::simplifyTypeName)
+                        .collect(Collectors.joining(","));
+                return base + "<" + simplifiedGenerics + ">";
+            }
+            // Handle arrays: java.lang.String[] -> String[]
+            if (typeName.endsWith("[]")) {
+                return simplifyTypeName(typeName.substring(0, typeName.length() - 2)) + "[]";
+            }
+            // Simple case: java.lang.String -> String
+            int lastDot = typeName.lastIndexOf('.');
+            return lastDot >= 0 ? typeName.substring(lastDot + 1) : typeName;
         }
 
         /**
@@ -453,24 +530,29 @@ public class JavaSourceParser {
             }
 
             if (scopeType != null) {
-                String args = call.getArguments().stream()
-                        .map(a -> "?")
-                        .collect(Collectors.joining(","));
-                String targetId = "method:" + scopeType + "." + methodName + "(" + args + ")";
+                // Only create CALLS edge if target type is internal (from source code)
+                // This filters out JDK, Spring, and other library calls
+                if (internalTypes.contains(scopeType)) {
+                    String typeId = "type:" + scopeType;
+                    String args = call.getArguments().stream()
+                            .map(a -> "?")
+                            .collect(Collectors.joining(","));
+                    String targetId = "method:" + scopeType + "." + methodName + "(" + args + ")";
 
-                ensureTypeNode("type:" + scopeType, scopeType);
-                if (!graph.hasNode(targetId)) {
-                    graph.addNode(new CodeNode(targetId, NodeType.METHOD, methodName,
-                            scopeType + "." + methodName)
-                            .withProperty("external", true));
-                    graph.addRelationship(new CodeRelationship(
-                            "type:" + scopeType, targetId, RelationshipType.CONTAINS));
+                    if (!graph.hasNode(targetId)) {
+                        graph.addNode(new CodeNode(targetId, NodeType.METHOD, methodName,
+                                scopeType + "." + methodName)
+                                .withProperty("inferred", true));
+                        graph.addRelationship(new CodeRelationship(
+                                typeId, targetId, RelationshipType.CONTAINS));
+                    }
+
+                    graph.addRelationship(new CodeRelationship(callerId, targetId, RelationshipType.CALLS)
+                            .withProperty("lineNumber", line)
+                            .withProperty("resolved", false));
+                    unresolvedCalls++;
                 }
-
-                graph.addRelationship(new CodeRelationship(callerId, targetId, RelationshipType.CALLS)
-                        .withProperty("lineNumber", line)
-                        .withProperty("resolved", false));
-                unresolvedCalls++;
+                // Skip external library calls - don't create nodes or edges
             }
         }
 

@@ -107,7 +107,6 @@ Supported formats:
 | DOT | `dot` | Graphviz DOT format. Render with `dot -Tpng graph.dot -o graph.png`. |
 | GraphML | `graphml` | XML-based graph format. Import into yEd, Gephi, Cytoscape, etc. |
 
-
 ### Code Property Graph
 
 Use the `cpg` subcommand to build a Code Property Graph that includes AST structure, control flow, and data flow edges in addition to the structural knowledge graph:
@@ -127,28 +126,6 @@ java -jar app/build/libs/code-graph.jar cpg /path/to/project
 ```
 
 The CPG database path uses a `-cpg-db` suffix by default (e.g., `./inventory-service-cpg-db`).
-
-### MCP Server (REST API)
-
-Use the `mcp-server` subcommand to start a lightweight REST server that exposes the knowledge graph stored in KuzuDB or Neo4j. This allows remote tools to query the graph via HTTP.
-
-```bash
-# Start MCP server with KuzuDB (default)
-java -jar app/build/libs/code-graph.jar mcp-server
-
-# Start MCP server with Neo4j
-java -jar app/build/libs/code-graph.jar mcp-server -b neo4j --neo4j-password changeme
-
-# Specify port (default: 7070)
-java -jar app/build/libs/code-graph.jar mcp-server --port 8080
-```
-
-Endpoints:
-
-- `GET  /health` — Health check (returns OK)
-- `POST /query`  — (WIP) Accepts a Cypher query in the request body and returns results (to be implemented)
-
-The server connects to the same database as the CLI, using the same backend and connection options.
 
 ### CLI options
 
@@ -236,8 +213,29 @@ MATCH (c:Class)-[:CONTAINS]->(m:Method) RETURN c.name, m.name
 -- Inheritance hierarchy
 MATCH (c:Class)-[:EXTENDS]->(p:Class) RETURN c.name, p.name
 
--- Method call graph
+-- Method call graph (all internal calls)
 MATCH (a:Method)-[:CALLS]->(b:Method) RETURN a.qualifiedName, b.qualifiedName
+
+-- Controller → Service → Repository call chains
+MATCH (c:Method)-[:CALLS]->(s:Method)-[:CALLS]->(r:Method)
+WHERE c.qualifiedName CONTAINS 'Controller' 
+  AND s.qualifiedName CONTAINS 'Service'
+RETURN c.name AS controller, s.name AS service, r.name AS repository
+
+-- Find all callers of a specific method
+MATCH (caller:Method)-[:CALLS]->(target:Method)
+WHERE target.name = 'save'
+RETURN caller.qualifiedName, target.qualifiedName
+
+-- Methods with most outgoing calls
+MATCH (m:Method)-[c:CALLS]->()
+RETURN m.qualifiedName, COUNT(c) AS callCount
+ORDER BY callCount DESC LIMIT 10
+
+-- Methods that are never called (dead code candidates)
+MATCH (m:Method)
+WHERE NOT ()-[:CALLS]->(m)
+RETURN m.qualifiedName
 
 -- Classes implementing an interface
 MATCH (c:Class)-[:IMPLEMENTS]->(i:Interface) RETURN c.name, i.name

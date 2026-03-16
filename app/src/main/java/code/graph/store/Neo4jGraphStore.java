@@ -101,7 +101,7 @@ public class Neo4jGraphStore implements GraphStore {
                 }
             }
 
-            // Batch insert relationships — group by type
+            // Batch insert relationships  group by type
             Map<String, List<Map<String, Object>>> relsByType = new HashMap<>();
             for (CodeRelationship rel : graph.getRelationships()) {
                 String relType = rel.type().name();

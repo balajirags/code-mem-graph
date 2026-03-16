@@ -84,18 +84,19 @@ public class App implements Callable<Integer> {
             return 1;
         }
 
-        // Derive database name from project directory if not explicitly set
+        // Derive database name from project directory and always use kuzu_db/<project-name>-db
         String projectName = sourcePath.toAbsolutePath().normalize().getFileName().toString();
         if (neo4jDatabase == null || neo4jDatabase.equals(config.getNeo4jDatabase())) {
             if ("neo4j".equals(config.getNeo4jDatabase())) {
                 neo4jDatabase = projectName;
             }
         }
-        if (kuzuDbPath == null || kuzuDbPath.equals(config.getKuzuDbPath())) {
-            if ("./code-graph-db".equals(config.getKuzuDbPath())) {
-                kuzuDbPath = "./" + projectName + "-db";
-            }
+        // Always use kuzu_db/<project-name>-db for KuzuDB
+        java.nio.file.Path kuzuDir = java.nio.file.Path.of("kuzu_db");
+        if (!java.nio.file.Files.exists(kuzuDir)) {
+            java.nio.file.Files.createDirectories(kuzuDir);
         }
+        kuzuDbPath = kuzuDir.resolve(projectName + "-db").toString();
 
         // Detect modules (or single project) and build combined classpath
         List<Path> modules = detectModules(sourcePath);

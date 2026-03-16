@@ -10,3 +10,6 @@ build
 *.log
 .gitconfig
 *-db
+kuzu_db/*
+*db
+*kz

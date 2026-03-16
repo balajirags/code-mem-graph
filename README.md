@@ -107,6 +107,7 @@ Supported formats:
 | DOT | `dot` | Graphviz DOT format. Render with `dot -Tpng graph.dot -o graph.png`. |
 | GraphML | `graphml` | XML-based graph format. Import into yEd, Gephi, Cytoscape, etc. |
 
+
 ### Code Property Graph
 
 Use the `cpg` subcommand to build a Code Property Graph that includes AST structure, control flow, and data flow edges in addition to the structural knowledge graph:
@@ -126,6 +127,28 @@ java -jar app/build/libs/code-graph.jar cpg /path/to/project
 ```
 
 The CPG database path uses a `-cpg-db` suffix by default (e.g., `./inventory-service-cpg-db`).
+
+### MCP Server (REST API)
+
+Use the `mcp-server` subcommand to start a lightweight REST server that exposes the knowledge graph stored in KuzuDB or Neo4j. This allows remote tools to query the graph via HTTP.
+
+```bash
+# Start MCP server with KuzuDB (default)
+java -jar app/build/libs/code-graph.jar mcp-server
+
+# Start MCP server with Neo4j
+java -jar app/build/libs/code-graph.jar mcp-server -b neo4j --neo4j-password changeme
+
+# Specify port (default: 7070)
+java -jar app/build/libs/code-graph.jar mcp-server --port 8080
+```
+
+Endpoints:
+
+- `GET  /health` — Health check (returns OK)
+- `POST /query`  — (WIP) Accepts a Cypher query in the request body and returns results (to be implemented)
+
+The server connects to the same database as the CLI, using the same backend and connection options.
 
 ### CLI options
 

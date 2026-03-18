@@ -1,54 +1,129 @@
 # code-mem-graph
 
-A CLI tool that parses Java source code and builds a Code Property Graph (CPG) in [Neo4j](https://neo4j.com/) or [KuzuDB](https://kuzudb.com/) using [JavaParser](https://javaparser.org/).
+A CLI tool that parses source code and builds a Code Property Graph (CPG) in [Neo4j](https://neo4j.com/) or [KuzuDB](https://kuzudb.com/). Auto-detects the project language.
+
+## Supported languages
+
+| Language | Parser | CPG (control flow + data flow) |
+|----------|--------|-------------------------------|
+| Java | [JavaParser](https://javaparser.org/) | Yes |
+| Kotlin | Kotlin Compiler PSI | Structural only |
+| JavaScript/React/TypeScript | Babel (via Node.js) | Structural only |
+| Python | Python `ast` module + custom CFG/DFG walker | Yes |
 
 ## What it extracts
 
-- **Nodes**: packages, classes, interfaces, enums, records, methods, constructors, fields (including record components), parameters, annotation types, files, statements (IF, FOR, FOREACH, WHILE, DO_WHILE, RETURN, THROW, TRY, SWITCH, EXPRESSION, etc.)
-- **Relationships**: CONTAINS, EXTENDS, IMPLEMENTS, CALLS, RETURNS, HAS_PARAMETER, OF_TYPE, HAS_ANNOTATION, OVERRIDES, THROWS, SOURCE_FILE (type → file), AST_CHILD (method → statements), CFG_NEXT (control flow between statements), DATA_FLOW (variable definition → use)
+- **Nodes**: packages, classes, interfaces, enums, records, methods, constructors, fields, parameters, annotation types, files, statements
+- **Relationships**: CONTAINS, EXTENDS, IMPLEMENTS, CALLS, RETURNS, HAS_PARAMETER, OF_TYPE, HAS_ANNOTATION, OVERRIDES, THROWS, SOURCE_FILE, AST_CHILD, CFG_NEXT, DATA_FLOW
+- **JS/React extras**: IMPORTS, EXPORTS, RENDERS, USES_HOOK, PROP_DEPENDENCY
+- **Python extras**: DECORATES, YIELDS
+- **Kotlin extras**: EXTENSION_OF, DELEGATES_TO, SEALED_SUBTYPE, COMPANION_OF, SUSPENDS
 
 ## Prerequisites
 
-- **Java 21+**
-- One of:
-  - **KuzuDB** — embedded, no setup needed (default backend)
+- **Java/Kotlin projects**: Java 21+
+- **JavaScript/TypeScript projects**: Node.js
+- **Python projects**: Python 3
+- Graph backend (pick one):
+  - **KuzuDB** — embedded, no setup needed (default)
   - **Neo4j** — requires a running Neo4j instance
 
-## Build
+## Install
+
+Run the install script to build all parsers and create ready-to-run executables in `bin/`:
 
 ```bash
+./install.sh
+```
+
+This will:
+- Build the Java fat JAR (`cmg-java`)
+- Install Node.js dependencies (`cmg-js`)
+- Install Python dependencies (`cmg-python`)
+
+Optionally add to your PATH:
+
+```bash
+export PATH="$(pwd)/bin:$PATH"
+```
+
+Then run directly:
+
+```bash
+cmg-java   /path/to/java/project
+cmg-js     /path/to/react/app
+cmg-python /path/to/flask/app
+```
+
+### Manual build
+
+```bash
+# Java/Kotlin only
 ./gradlew build
-```
 
-### Standalone fat JAR
-
-Build a self-contained JAR with all dependencies bundled:
-
-```bash
+# Standalone fat JAR
 ./gradlew shadowJar
-```
-
-This produces `app/build/libs/code-mem-graph.jar` (~110 MB) that can be run anywhere Java 21+ is installed:
-
-```bash
-java -jar app/build/libs/code-mem-graph.jar <Source /path/to/java/project>
+# produces app/build/libs/code-mem-graph.jar
 ```
 
 ## Run
 
-### Using KuzuDB (default — no server required)
+Each language has its own runner. All runners default to **KuzuDB** and create the database at `./kuzu_db/<project-name>-db`.
+
+### Java / Kotlin
 
 ```bash
-./gradlew run --args="<Source directory /path/to/java/project>"
+# Via install script executable
+cmg-java /path/to/java/project
+cmg-java /path/to/kotlin/project
+
+# Or via Gradle
+./gradlew run --args="/path/to/java/project"
+
+# Or via fat JAR
+java -jar app/build/libs/code-mem-graph.jar /path/to/project
+
+# Force a specific language
+cmg-java /path/to/project -l kotlin
 ```
 
-The path should point to the **Java project root directory**. The tool automatically detects the source root by looking for `src/main/java`, then `src`, and falls back to the given directory.
+The tool automatically detects the source root by looking for `src/main/java`, then `src`, and falls back to the given directory.
 
-This creates a `./kuzu_db/<project-name>-db` directory with the embedded KuzuDB database.
+### JavaScript / React / TypeScript
 
-### Using Neo4j
+```bash
+# Via install script executable
+cmg-js /path/to/react/app
 
-Start Neo4j first (e.g. via Docker):
+# Output JSON to stdout instead
+cmg-js /path/to/react/app --backend json
+
+# Custom database path
+cmg-js /path/to/react/app --db-path ./kuzu_db/my-react-db
+
+# Clear existing graph before writing
+cmg-js /path/to/react/app --clear
+```
+
+### Python
+
+```bash
+# Via install script executable
+cmg-python /path/to/flask/app
+
+# Output JSON to stdout instead
+cmg-python /path/to/flask/app --backend json
+
+# Custom database path
+cmg-python /path/to/flask/app --db-path ./kuzu_db/my-flask-db
+
+# Clear existing graph before writing
+cmg-python /path/to/flask/app --clear
+```
+
+### Using Neo4j (any language)
+
+Start Neo4j first:
 
 ```bash
 docker run -d --name neo4j \
@@ -57,41 +132,38 @@ docker run -d --name neo4j \
   neo4j:5
 ```
 
-Then run:
+Then pass `--backend neo4j` (or `-b neo4j` for Gradle):
 
 ```bash
-./gradlew run --args="/path/to/java/project -b neo4j --neo4j-password changeme"
+cmg-java   /path/to/project    -b neo4j --neo4j-password changeme
+cmg-js     /path/to/react/app  --backend neo4j --neo4j-password changeme
+cmg-python /path/to/flask/app  --backend neo4j --neo4j-password changeme
 ```
 
-### Incremental parsing
+### Incremental parsing (Java/Kotlin only)
 
 Use `--incremental` to only re-parse files that have changed since the last run. File hashes (SHA-256) are stored in `.code-mem-graph-hashes` inside the project root:
 
 ```bash
-./gradlew run --args="/path/to/java/project --incremental"
+cmg-java /path/to/java/project --incremental
 ```
-
-On subsequent runs, unchanged files are skipped, making re-analysis of large codebases significantly faster.
 
 ### Exporting to file (no database required)
 
-Use the `export` subcommand to export the parsed graph directly to DOT (Graphviz), GraphML, or JSON format:
+Use the `export` subcommand (Java/Kotlin) or `--backend json` (JS/Python) to export without a database:
 
 ```bash
-# Export as JSON to stdout
-./gradlew run --args="export /path/to/java/project"
+# Java/Kotlin — DOT, GraphML, or JSON via export subcommand
+cmg-java export /path/to/java/project -f dot -o graph.dot
+cmg-java export /path/to/java/project -f graphml -o graph.graphml
+cmg-java export /path/to/project -f json -o graph.json
 
-# Export as DOT to a file
-./gradlew run --args="export /path/to/java/project -f dot -o graph.dot"
-
-# Export as GraphML
-./gradlew run --args="export /path/to/java/project -f graphml -o graph.graphml"
-
-# Using the fat JAR
-java -jar app/build/libs/code-mem-graph.jar export /path/to/project -f json -o graph.json
+# JavaScript/Python — JSON to stdout
+cmg-js     /path/to/react/app  --backend json > graph.json
+cmg-python /path/to/flask/app  --backend json > graph.json
 ```
 
-Supported formats:
+Supported formats (export subcommand):
 | Format | Flag | Description |
 |--------|------|-------------|
 | JSON | `json` | Default. Nodes and relationships as JSON arrays. |
@@ -100,15 +172,18 @@ Supported formats:
 
 ### CLI options
 
+**Java/Kotlin (Gradle / fat JAR):**
+
 ```
-Usage: code-mem-graph [-hV] [--incremental] [-b=<backend>]
+Usage: code-mem-graph [-hV] [--incremental] [-b=<backend>] [-l=<language>]
                   [-c=<configPath>] [--cp=<classpath>]
                   [--kuzu-db=<kuzuDbPath>] [--neo4j-database=<neo4jDatabase>]
                   [--neo4j-password=<neo4jPassword>] [--neo4j-uri=<neo4jUri>]
                   [--neo4j-user=<neo4jUser>] <sourcePath> [COMMAND]
 
-      <sourcePath>             Path to the Java project root directory
-                               (auto-detects src/main/java or src)
+      <sourcePath>             Path to the project root directory
+  -l, --language=<language>    Source language: java, javascript, python, kotlin
+                               (default: auto-detect)
   -b, --backend=<backend>      Graph backend: neo4j or kuzu
   -c, --config=<configPath>    Path to config file (default: ./application.yaml)
       --incremental            Only re-parse changed files; keep existing graph data
@@ -125,9 +200,22 @@ Commands:
   export  Export graph to DOT, GraphML, or JSON (no database needed)
 ```
 
-By default, each run **replaces** the existing graph data. Use `--incremental` to keep existing data and only add/update changed files.
+**JavaScript / Python standalone:**
 
-The database name is derived from the input project directory (e.g., `inventory-service` → Neo4j database `inventory-service`, KuzuDB path `./kuzu_db/inventory-service-db`). Override with `--neo4j-database` or `--kuzu-db`.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--backend` | `kuzu` | `kuzu`, `neo4j`, or `json` |
+| `--db-path` | `./kuzu_db/<repo-name>-db` | KuzuDB database directory |
+| `--clear` | off | Clear existing graph before writing |
+| `--extensions` | varies | Comma-separated file extensions (JS only) |
+| `--neo4j-uri` | `bolt://localhost:7687` | Neo4j connection URI |
+| `--neo4j-user` | `neo4j` | Neo4j username |
+| `--neo4j-password` | — | Neo4j password |
+| `--neo4j-database` | `neo4j` | Neo4j database name |
+
+By default, each run **replaces** the existing graph data. Use `--incremental` (Java/Kotlin) or `--clear` (JS/Python) to control this behavior.
+
+The database name is derived from the source directory (e.g., `inventory-service` → `./kuzu_db/inventory-service-db`). Override with `--kuzu-db` or `--db-path`.
 
 ## Configuration file
 
@@ -236,8 +324,14 @@ MATCH (c:Class)-[:SOURCE_FILE]->(f:File) RETURN c.name, f.name
 ## Project structure
 
 ```
+install.sh                      # Build & install script — creates bin/ executables
+bin/
+├── cmg-java                    # Java/Kotlin runner (wraps fat JAR)
+├── cmg-js                      # JavaScript/TypeScript runner (wraps Node.js parser)
+└── cmg-python                  # Python runner (wraps Python parser)
+
 app/src/main/java/code/graph/
-├── App.java                    # CLI entry point (picocli) — builds CPG by default
+├── App.java                    # CLI entry point — auto-detects language, builds CPG for Java
 ├── ExportCommand.java          # Export subcommand (DOT/GraphML/JSON)
 ├── config/
 │   └── AppConfig.java          # Properties file loader
@@ -253,22 +347,40 @@ app/src/main/java/code/graph/
 │   ├── NodeType.java           # Node type enum
 │   └── RelationshipType.java   # Relationship type enum
 ├── parser/
-│   ├── CpgParser.java          # Code Property Graph parser (AST + CFG + data flow)
-│   ├── FileHashCache.java      # Incremental parsing hash tracker
-│   └── JavaSourceParser.java   # JavaParser AST visitor
+│   ├── CpgParser.java              # Code Property Graph parser (Java: AST + CFG + data flow)
+│   ├── FileHashCache.java          # Incremental parsing hash tracker
+│   ├── JavaSourceParser.java       # Java AST visitor (JavaParser)
+│   ├── JavaScriptSourceParser.java # JS/React/TS parser (Babel via Node.js)
+│   ├── KotlinSourceParser.java     # Kotlin parser (Kotlin Compiler PSI)
+│   ├── PythonSourceParser.java     # Python parser (ast module)
+│   ├── SourceParser.java           # Parser strategy interface
+│   └── SourceParserFactory.java    # Language detection & parser factory
 └── store/
     ├── GraphStore.java         # Graph store interface
     ├── KuzuGraphStore.java     # KuzuDB implementation
     └── Neo4jGraphStore.java    # Neo4j implementation
+
+parsers/
+├── javascript/
+│   ├── parse.js                # Babel-based JS/React/TS parser (standalone)
+│   ├── store.js                # KuzuDB + Neo4j graph store
+│   └── package.json
+└── python/
+    ├── parse.py                # ast-based Python parser (standalone)
+    ├── store.py                # KuzuDB + Neo4j graph store
+    └── requirements.txt
 ```
 
 ## Tech stack
 
 | Component | Library |
 |-----------|---------|
-| AST parsing | JavaParser 3.26.4 (with symbol solver) |
+| AST parsing (Java) | JavaParser 3.26.4 (with symbol solver) |
+| AST parsing (Kotlin) | Kotlin Compiler |
+| AST parsing (JS/TS) | Babel (via Node.js) |
+| AST parsing (Python) | Python 3 ast module |
 | CLI | picocli 4.7.6 |
 | Neo4j | Neo4j Java Driver 5.28.4 |
-| KuzuDB | KuzuDB Java 0.10.0 |
+| KuzuDB | KuzuDB 0.11.3 (Java, Node.js, Python) |
 | Build | Gradle 9.2 / Java 21 |
 | Fat JAR | Shadow 9.0.0-beta12 |

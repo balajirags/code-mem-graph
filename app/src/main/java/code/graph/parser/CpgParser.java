@@ -232,7 +232,7 @@ public class CpgParser {
 
                 // AST_CHILD: parent → this statement
                 graph.addRelationship(new CodeRelationship(parentId, stmtId, RelationshipType.AST_CHILD)
-                        .withProperty("order", counter[0] - 1));
+                        .withProperty("ast_order", counter[0] - 1));
 
                 // CFG_NEXT from predecessors → this statement
                 for (String pred : currentPreds) {

@@ -7,6 +7,9 @@ import code.graph.config.AppConfig;
 import code.graph.model.CodeGraph;
 import code.graph.parser.CpgParser;
 import code.graph.parser.FileHashCache;
+import code.graph.parser.SourceParser;
+import code.graph.parser.SourceParserFactory;
+import code.graph.parser.SourceParserFactory.Language;
 import code.graph.store.GraphStore;
 import code.graph.store.KuzuGraphStore;
 import code.graph.store.Neo4jGraphStore;
@@ -21,18 +24,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 
 @Command(
         name = "code-mem-graph",
         mixinStandardHelpOptions = true,
         version = "code-mem-graph 0.1.0",
-        description = "Parses Java source code and builds a Code Property Graph (AST + CFG + data flow) in Neo4j or KuzuDB.",
+        description = "Parses source code and builds a Code Property Graph in Neo4j or KuzuDB. Auto-detects language (Java, JavaScript, Python, Kotlin).",
         subcommands = {ExportCommand.class}
 )
 public class App implements Callable<Integer> {
 
-    @Parameters(index = "0", arity = "0..1", description = "Path to Java project root directory.")
+    @Parameters(index = "0", arity = "0..1", description = "Path to project root directory.")
     private Path sourcePath;
 
     @Option(names = {"-c", "--config"}, description = "Path to config file (default: ./application.yaml)")
@@ -61,6 +66,9 @@ public class App implements Callable<Integer> {
 
     @Option(names = {"--incremental"}, description = "Only re-parse files that have changed since the last run.")
     private boolean incremental;
+
+    @Option(names = {"-l", "--language"}, description = "Source language: java, javascript, python, kotlin (default: auto-detect)")
+    private String language;
 
     @Override
     public Integer call() throws Exception {
@@ -102,6 +110,32 @@ public class App implements Callable<Integer> {
         List<Path> modules = detectModules(sourcePath);
         List<Path> classpathEntries = buildClasspath(sourcePath);
 
+        // Detect language (CLI override or auto-detect)
+        Language detectedLang;
+        if (language != null) {
+            Optional<Language> parsed = SourceParserFactory.parseLanguage(language);
+            if (parsed.isEmpty()) {
+                System.err.println("Error: Unknown language: " + language + ". Supported: java, javascript, python, kotlin");
+                return 1;
+            }
+            detectedLang = parsed.get();
+            System.out.printf("Language: %s (specified via --language)%n", detectedLang.getDisplayName());
+        } else {
+            Optional<Language> detected = SourceParserFactory.detectLanguage(sourcePath);
+            if (detected.isEmpty()) {
+                System.err.println("Error: No supported source files found in " + sourcePath);
+                return 1;
+            }
+            detectedLang = detected.get();
+            Map<Language, Integer> allLangs = SourceParserFactory.detectAllLanguages(sourcePath);
+            if (allLangs.size() > 1) {
+                System.out.printf("Detected languages: %s (using %s — override with --language)%n",
+                        allLangs, detectedLang.getDisplayName());
+            } else {
+                System.out.printf("Detected language: %s%n", detectedLang.getDisplayName());
+            }
+        }
+
         // Set up incremental hash cache if requested
         FileHashCache hashCache = null;
         if (incremental) {
@@ -110,11 +144,14 @@ public class App implements Callable<Integer> {
             System.out.println("Incremental mode: tracking file hashes in " + cacheFile);
         }
 
+        // Resolve the workspace root (for finding external parser scripts)
+        Path workspaceRoot = Path.of(System.getProperty("user.dir"));
+
         // Parse all modules into a single combined graph
         CodeGraph graph = new CodeGraph();
         for (Path module : modules) {
             Path sourceRoot = detectSourceRoot(module);
-            System.out.println("Building CPG from: " + sourceRoot.toAbsolutePath());
+            System.out.println("Parsing " + detectedLang.getDisplayName() + " sources from: " + sourceRoot.toAbsolutePath());
 
             // For multi-module, also add each module's own classpath
             List<Path> moduleCp = new ArrayList<>(classpathEntries);
@@ -122,8 +159,15 @@ public class App implements Callable<Integer> {
                 moduleCp.addAll(buildModuleClasspath(module));
             }
 
-            CpgParser parser = new CpgParser(sourceRoot, moduleCp, hashCache);
-            CodeGraph moduleGraph = parser.parseDirectory(sourceRoot);
+            // Java gets the full CPG parser; other languages use their structural parser
+            CodeGraph moduleGraph;
+            if (detectedLang == Language.JAVA) {
+                CpgParser cpgParser = new CpgParser(sourceRoot, moduleCp, hashCache);
+                moduleGraph = cpgParser.parseDirectory(sourceRoot);
+            } else {
+                SourceParser parser = SourceParserFactory.createParser(detectedLang, sourceRoot, moduleCp, hashCache, workspaceRoot);
+                moduleGraph = parser.parseDirectory(sourceRoot);
+            }
             graph.merge(moduleGraph);
         }
 
@@ -132,7 +176,7 @@ public class App implements Callable<Integer> {
             hashCache.save();
         }
 
-        System.out.printf("Code Property Graph: %d nodes, %d relationships%n",
+        System.out.printf("Extracted %d nodes and %d relationships%n",
                 graph.nodeCount(), graph.relationshipCount());
 
         // Store in graph database
@@ -144,7 +188,7 @@ public class App implements Callable<Integer> {
                 store.clear();
             }
 
-            System.out.println("Saving CPG to " + backend + "...");
+            System.out.println("Saving graph to " + backend + "...");
             store.save(graph);
             System.out.println(store.summary());
             System.out.println("Done.");

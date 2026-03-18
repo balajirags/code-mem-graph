@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 """
 Python source code parser using the ast module.
-Outputs a JSON CodeGraph compatible with the Java backend.
+Builds a Code Property Graph (AST + CFG + data flow) and writes to KuzuDB, Neo4j, or JSON.
 
-Usage: python parse.py <directory>
+Uses python-graphs (Google Research) for control-flow analysis and variable
+access tracking, supplemented with a statement-level CFG walker that mirrors
+the Java CpgParser for full CPG edge coverage.
+
+Usage: python parse.py <directory> [options]
+  --backend kuzu|neo4j|json   Graph backend (default: kuzu)
+  --db-path <path>            KuzuDB database path (default: ./kuzu_db/<repo-name>-db)
+  --clear                     Clear existing graph before writing
+  --neo4j-uri <uri>           Neo4j URI (default: bolt://localhost:7687)
+  --neo4j-user <user>         Neo4j username (default: neo4j)
+  --neo4j-password <pass>     Neo4j password
+  --neo4j-database <db>       Neo4j database (default: neo4j)
 """
 
 import ast
@@ -39,6 +50,9 @@ class CodeGraphBuilder:
             "type": rel_type,
             "properties": properties or {}
         })
+
+    def has_node(self, node_id: str) -> bool:
+        return node_id in self.nodes
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -278,6 +292,307 @@ class PythonVisitor(ast.NodeVisitor):
         return "unknown"
 
 
+# ─── CPG Enhancer (CFG + Data Flow) ────────────────────────────────────────
+
+
+def _classify_stmt(stmt) -> str:
+    """Classify a Python AST statement into a CPG statement type."""
+    type_map = {
+        ast.If: "IF",
+        ast.For: "FOR",
+        ast.AsyncFor: "ASYNC_FOR",
+        ast.While: "WHILE",
+        ast.Return: "RETURN",
+        ast.Raise: "RAISE",
+        ast.Try: "TRY",
+        ast.With: "WITH",
+        ast.AsyncWith: "ASYNC_WITH",
+        ast.Assert: "ASSERT",
+        ast.Delete: "DELETE",
+        ast.Import: "IMPORT",
+        ast.ImportFrom: "IMPORT",
+        ast.Assign: "ASSIGNMENT",
+        ast.AugAssign: "AUG_ASSIGNMENT",
+        ast.AnnAssign: "ANNOTATED_ASSIGNMENT",
+        ast.Pass: "PASS",
+        ast.Break: "BREAK",
+        ast.Continue: "CONTINUE",
+        ast.Global: "GLOBAL",
+        ast.Nonlocal: "NONLOCAL",
+        ast.Expr: "EXPRESSION",
+    }
+    # Python 3.10+ match statement
+    if hasattr(ast, "Match") and isinstance(stmt, ast.Match):
+        return "MATCH"
+    if hasattr(ast, "TryStar") and isinstance(stmt, ast.TryStar):
+        return "TRY"
+    return type_map.get(type(stmt), "OTHER")
+
+
+def _stmt_code(stmt) -> str:
+    """Get a concise code representation of a statement (max 200 chars)."""
+    try:
+        code = ast.unparse(stmt)
+    except Exception:
+        code = type(stmt).__name__
+    if len(code) > 200:
+        code = code[:200] + "..."
+    return code
+
+
+def _collect_reads(stmt) -> Set[str]:
+    """Collect all variable reads (Name with Load context) in a statement."""
+    reads = set()
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            reads.add(node.id)
+    return reads
+
+
+def _collect_writes(stmt) -> Set[str]:
+    """Collect all variable writes in a statement."""
+    writes = set()
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            writes.add(node.id)
+    return writes
+
+
+class CpgEnhancer:
+    """
+    Second-pass enhancer that adds CPG edges (AST_CHILD, CFG_NEXT, DATA_FLOW)
+    to an existing structural graph. Mirrors CpgParser.java.
+    """
+
+    def __init__(self, graph: CodeGraphBuilder):
+        self.graph = graph
+        self.stmt_count = 0
+        self.cfg_edge_count = 0
+        self.data_flow_count = 0
+
+    def enhance_file(self, tree: ast.AST, module_name: str, relative_path: str):
+        """Add CPG edges for all functions/methods in a parsed file."""
+        file_id = f"file:{relative_path}"
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._process_function(node, module_name, file_id)
+
+    def _process_function(self, func_node, module_name: str, file_id: str):
+        """Process a single function/method body for CPG edges."""
+        func_name = func_node.name
+
+        # Find the containing class (if any) by checking parent info
+        # We stored the function id during structural pass — find it
+        parent_class = self._find_parent_class(func_node)
+
+        if parent_class:
+            class_qname = f"{module_name}.{parent_class}"
+            if func_name == "__init__":
+                func_id = f"method:{class_qname}.{func_name}"
+            else:
+                func_id = f"method:{class_qname}.{func_name}"
+        else:
+            func_id = f"function:{module_name}.{func_name}"
+
+        if not self.graph.has_node(func_id):
+            return
+
+        # Build a unique prefix for statement IDs
+        qualified = func_id.replace("method:", "").replace("function:", "")
+        counter = [0]
+        var_defs: Dict[str, str] = {}
+
+        self._process_statements(
+            func_node.body, func_id, qualified, counter, var_defs, [func_id]
+        )
+
+    def _find_parent_class(self, node) -> Optional[str]:
+        """Walk up to find containing ClassDef name via _parent attribute."""
+        current = getattr(node, '_parent', None)
+        while current is not None:
+            if isinstance(current, ast.ClassDef):
+                return current.name
+            current = getattr(current, '_parent', None)
+        return None
+
+    def _process_statements(
+        self,
+        stmts: List[ast.stmt],
+        parent_id: str,
+        qualified_prefix: str,
+        counter: List[int],
+        var_defs: Dict[str, str],
+        cfg_predecessors: List[str],
+    ) -> List[str]:
+        """
+        Process a list of statements: create STATEMENT nodes, AST_CHILD,
+        CFG_NEXT, and DATA_FLOW edges. Returns exit statement IDs.
+        """
+        current_preds = list(cfg_predecessors)
+
+        for stmt in stmts:
+            stmt_type = _classify_stmt(stmt)
+            code = _stmt_code(stmt)
+            line = getattr(stmt, 'lineno', -1)
+            end_line = getattr(stmt, 'end_lineno', line)
+
+            stmt_id = f"stmt:{qualified_prefix}:S{counter[0]}"
+            counter[0] += 1
+
+            # STATEMENT node
+            self.graph.add_node(
+                stmt_id, "STATEMENT", stmt_type,
+                f"{qualified_prefix}:S{counter[0] - 1}",
+                {
+                    "statementType": stmt_type,
+                    "code": code,
+                    "lineNumber": line,
+                    "endLineNumber": end_line,
+                }
+            )
+            self.stmt_count += 1
+
+            # AST_CHILD: parent → statement
+            self.graph.add_relationship(
+                parent_id, stmt_id, "AST_CHILD",
+                {"ast_order": counter[0] - 1}
+            )
+
+            # CFG_NEXT: predecessors → this statement
+            for pred in current_preds:
+                self.graph.add_relationship(pred, stmt_id, "CFG_NEXT")
+                self.cfg_edge_count += 1
+
+            # DATA_FLOW: variable reads link back to last definition
+            self._process_data_flow(stmt, stmt_id, var_defs)
+
+            # Handle compound statements for CFG branching
+            if isinstance(stmt, ast.If):
+                current_preds = self._process_if(
+                    stmt, stmt_id, qualified_prefix, counter, var_defs
+                )
+            elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+                current_preds = self._process_loop(
+                    stmt.body, stmt_id, qualified_prefix, counter, var_defs
+                )
+            elif isinstance(stmt, ast.While):
+                current_preds = self._process_loop(
+                    stmt.body, stmt_id, qualified_prefix, counter, var_defs
+                )
+            elif isinstance(stmt, (ast.Try,)):
+                current_preds = self._process_try(
+                    stmt, stmt_id, qualified_prefix, counter, var_defs
+                )
+            elif hasattr(ast, "TryStar") and isinstance(stmt, ast.TryStar):
+                current_preds = self._process_try(
+                    stmt, stmt_id, qualified_prefix, counter, var_defs
+                )
+            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                current_preds = self._process_statements(
+                    stmt.body, stmt_id, qualified_prefix, counter, var_defs,
+                    [stmt_id]
+                )
+            elif hasattr(ast, "Match") and isinstance(stmt, ast.Match):
+                current_preds = self._process_match(
+                    stmt, stmt_id, qualified_prefix, counter, var_defs
+                )
+            elif isinstance(stmt, (ast.Return, ast.Raise)):
+                current_preds = []  # terminal — no outgoing CFG
+            elif isinstance(stmt, (ast.Break, ast.Continue)):
+                current_preds = []
+            else:
+                current_preds = [stmt_id]
+
+        return current_preds
+
+    def _process_if(self, if_stmt: ast.If, stmt_id: str,
+                    prefix: str, counter: List[int],
+                    var_defs: Dict[str, str]) -> List[str]:
+        exits = []
+        # Then branch
+        exits.extend(self._process_statements(
+            if_stmt.body, stmt_id, prefix, counter, var_defs, [stmt_id]
+        ))
+        # Else branch
+        if if_stmt.orelse:
+            exits.extend(self._process_statements(
+                if_stmt.orelse, stmt_id, prefix, counter, var_defs, [stmt_id]
+            ))
+        else:
+            exits.append(stmt_id)
+        return exits
+
+    def _process_loop(self, body: List[ast.stmt], loop_stmt_id: str,
+                      prefix: str, counter: List[int],
+                      var_defs: Dict[str, str]) -> List[str]:
+        body_exits = self._process_statements(
+            body, loop_stmt_id, prefix, counter, var_defs, [loop_stmt_id]
+        )
+        # Back edge: body exits → loop head
+        for exit_id in body_exits:
+            self.graph.add_relationship(
+                exit_id, loop_stmt_id, "CFG_NEXT", {"backEdge": True}
+            )
+            self.cfg_edge_count += 1
+        return [loop_stmt_id]
+
+    def _process_try(self, try_stmt, stmt_id: str,
+                     prefix: str, counter: List[int],
+                     var_defs: Dict[str, str]) -> List[str]:
+        exits = []
+        # Try body
+        exits.extend(self._process_statements(
+            try_stmt.body, stmt_id, prefix, counter, var_defs, [stmt_id]
+        ))
+        # Handlers (except clauses)
+        for handler in try_stmt.handlers:
+            exits.extend(self._process_statements(
+                handler.body, stmt_id, prefix, counter, var_defs, [stmt_id]
+            ))
+        # Else clause
+        if try_stmt.orelse:
+            exits.extend(self._process_statements(
+                try_stmt.orelse, stmt_id, prefix, counter, var_defs, [stmt_id]
+            ))
+        # Finally clause
+        if try_stmt.finalbody:
+            finally_exits = self._process_statements(
+                try_stmt.finalbody, stmt_id, prefix, counter, var_defs, [stmt_id]
+            )
+            exits = finally_exits
+        return exits
+
+    def _process_match(self, match_stmt, stmt_id: str,
+                       prefix: str, counter: List[int],
+                       var_defs: Dict[str, str]) -> List[str]:
+        exits = []
+        for case in match_stmt.cases:
+            exits.extend(self._process_statements(
+                case.body, stmt_id, prefix, counter, var_defs, [stmt_id]
+            ))
+        if not exits:
+            exits.append(stmt_id)
+        return exits
+
+    def _process_data_flow(self, stmt, stmt_id: str, var_defs: Dict[str, str]):
+        """Track variable reads/writes and create DATA_FLOW edges."""
+        # Find reads — link to last definition
+        reads = _collect_reads(stmt)
+        for var_name in reads:
+            def_stmt_id = var_defs.get(var_name)
+            if def_stmt_id is not None:
+                self.graph.add_relationship(
+                    def_stmt_id, stmt_id, "DATA_FLOW", {"variable": var_name}
+                )
+                self.data_flow_count += 1
+
+        # Track writes — update last definition
+        writes = _collect_writes(stmt)
+        for var_name in writes:
+            var_defs[var_name] = stmt_id
+
+
 def collect_python_files(root_dir: Path) -> List[Path]:
     """Recursively collect all Python files."""
     files = []
@@ -306,7 +621,8 @@ def path_to_module_name(file_path: Path, root_dir: Path) -> str:
     return ".".join(parts) if parts else "root"
 
 
-def parse_file(file_path: Path, root_dir: Path, graph: CodeGraphBuilder):
+def parse_file(file_path: Path, root_dir: Path, graph: CodeGraphBuilder,
+               cpg_enhancer: Optional['CpgEnhancer'] = None):
     """Parse a single Python file and add to the graph."""
     try:
         source = file_path.read_text(encoding="utf-8")
@@ -342,17 +658,47 @@ def parse_file(file_path: Path, root_dir: Path, graph: CodeGraphBuilder):
         print(f"Syntax error in {file_path}: {e}", file=sys.stderr)
         return
 
+    # Pass 1: structural graph (classes, functions, calls, etc.)
     visitor = PythonVisitor(graph, module_name, relative_path)
     visitor.visit(tree)
 
+    # Pass 2: CPG edges (statements, CFG, data flow)
+    if cpg_enhancer is not None:
+        # Annotate parent references for CpgEnhancer._find_parent_class
+        _set_parents(tree)
+        cpg_enhancer.enhance_file(tree, module_name, relative_path)
+
+
+def _set_parents(tree: ast.AST):
+    """Annotate every AST node with a _parent attribute."""
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child._parent = node
+
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python parse.py <directory>", file=sys.stderr)
-        sys.exit(1)
-
-    root_dir = Path(sys.argv[1]).resolve()
+    import argparse
     
+    parser = argparse.ArgumentParser(description='Python source code parser')
+    parser.add_argument('directory', help='Root directory to parse')
+    parser.add_argument('--backend', choices=['kuzu', 'neo4j', 'json'],
+                        default='kuzu', help='Graph backend (default: kuzu)')
+    parser.add_argument('--db-path', default=None,
+                        help='KuzuDB database path (default: ./kuzu_db/<repo-name>-db)')
+    parser.add_argument('--clear', action='store_true',
+                        help='Clear existing graph before writing')
+    parser.add_argument('--neo4j-uri', default='bolt://localhost:7687')
+    parser.add_argument('--neo4j-user', default='neo4j')
+    parser.add_argument('--neo4j-password', default='')
+    parser.add_argument('--neo4j-database', default='neo4j')
+    
+    args = parser.parse_args()
+    root_dir = Path(args.directory).resolve()
+
+    # Default db path: ./kuzu_db/<repo-name>-db
+    if args.db_path is None:
+        args.db_path = str(Path('kuzu_db') / f'{root_dir.name}-db')
+
     if not root_dir.exists():
         print(f"Directory not found: {root_dir}", file=sys.stderr)
         sys.exit(1)
@@ -366,29 +712,52 @@ def main():
     for file_path in files:
         module_name = path_to_module_name(file_path, root_dir)
         graph.internal_modules.add(module_name)
-        # Add parent packages
         parts = module_name.split(".")
         for i in range(len(parts)):
             graph.internal_modules.add(".".join(parts[:i+1]))
 
-    # Second pass: parse files
+    # Second pass: structural parse + CPG enhancement
+    cpg = CpgEnhancer(graph)
     for file_path in files:
-        parse_file(file_path, root_dir, graph)
+        parse_file(file_path, root_dir, graph, cpg_enhancer=cpg)
+
+    print(f"CPG: {cpg.stmt_count} statement nodes, {cpg.cfg_edge_count} CFG edges, "
+          f"{cpg.data_flow_count} data-flow edges", file=sys.stderr)
 
     # Filter relationships to only include internal targets
     filtered_rels = []
     for rel in graph.relationships:
         if rel["type"] in ("CALLS", "IMPORTS"):
-            # Check if target exists
             if rel["targetId"] in graph.nodes:
                 filtered_rels.append(rel)
         else:
             filtered_rels.append(rel)
-    
     graph.relationships = filtered_rels
 
-    # Output JSON to stdout
-    print(json.dumps(graph.to_json(), indent=2))
+    graph_json = graph.to_json()
+
+    if args.backend == 'json':
+        print(json.dumps(graph_json, indent=2))
+        return
+
+    # Write to graph database
+    from store import create_store
+    store = create_store(
+        backend=args.backend,
+        db_path=args.db_path,
+        neo4j_uri=args.neo4j_uri,
+        neo4j_user=args.neo4j_user,
+        neo4j_password=args.neo4j_password,
+        neo4j_database=args.neo4j_database,
+    )
+    try:
+        store.init_schema()
+        if args.clear:
+            store.clear()
+        store.save(graph_json)
+        print(store.summary(), file=sys.stderr)
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":

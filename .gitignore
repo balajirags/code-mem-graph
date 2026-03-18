@@ -21,3 +21,6 @@ parsers/javascript/package-lock.json
 # Python cache
 __pycache__/
 *.pyc
+
+# Generated executables
+bin/

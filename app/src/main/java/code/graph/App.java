@@ -1,12 +1,12 @@
 /*
- * code-graph: CLI tool to extract Java code knowledge graphs.
+ * code-mem-graph: CLI tool to extract Java code knowledge graphs.
  */
 package code.graph;
 
 import code.graph.config.AppConfig;
 import code.graph.model.CodeGraph;
+import code.graph.parser.CpgParser;
 import code.graph.parser.FileHashCache;
-import code.graph.parser.JavaSourceParser;
 import code.graph.store.GraphStore;
 import code.graph.store.KuzuGraphStore;
 import code.graph.store.Neo4jGraphStore;
@@ -24,18 +24,18 @@ import java.util.List;
 import java.util.concurrent.Callable;
 
 @Command(
-        name = "code-graph",
+        name = "code-mem-graph",
         mixinStandardHelpOptions = true,
-        version = "code-graph 0.1.0",
-        description = "Parses Java source code and builds a knowledge graph in Neo4j or KuzuDB.",
-        subcommands = {ExportCommand.class, CpgCommand.class}
+        version = "code-mem-graph 0.1.0",
+        description = "Parses Java source code and builds a Code Property Graph (AST + CFG + data flow) in Neo4j or KuzuDB.",
+        subcommands = {ExportCommand.class}
 )
 public class App implements Callable<Integer> {
 
     @Parameters(index = "0", arity = "0..1", description = "Path to Java project root directory.")
     private Path sourcePath;
 
-    @Option(names = {"-c", "--config"}, description = "Path to config file (default: ./code-graph.properties)")
+    @Option(names = {"-c", "--config"}, description = "Path to config file (default: ./application.yaml)")
     private Path configPath;
 
     @Option(names = {"-b", "--backend"}, description = "Graph backend: neo4j or kuzu")
@@ -105,7 +105,7 @@ public class App implements Callable<Integer> {
         // Set up incremental hash cache if requested
         FileHashCache hashCache = null;
         if (incremental) {
-            Path cacheFile = sourcePath.resolve(".code-graph-hashes");
+            Path cacheFile = sourcePath.resolve(".code-mem-graph-hashes");
             hashCache = new FileHashCache(cacheFile);
             System.out.println("Incremental mode: tracking file hashes in " + cacheFile);
         }
@@ -114,7 +114,7 @@ public class App implements Callable<Integer> {
         CodeGraph graph = new CodeGraph();
         for (Path module : modules) {
             Path sourceRoot = detectSourceRoot(module);
-            System.out.println("Parsing Java sources from: " + sourceRoot.toAbsolutePath());
+            System.out.println("Building CPG from: " + sourceRoot.toAbsolutePath());
 
             // For multi-module, also add each module's own classpath
             List<Path> moduleCp = new ArrayList<>(classpathEntries);
@@ -122,7 +122,7 @@ public class App implements Callable<Integer> {
                 moduleCp.addAll(buildModuleClasspath(module));
             }
 
-            JavaSourceParser parser = new JavaSourceParser(sourceRoot, moduleCp, hashCache);
+            CpgParser parser = new CpgParser(sourceRoot, moduleCp, hashCache);
             CodeGraph moduleGraph = parser.parseDirectory(sourceRoot);
             graph.merge(moduleGraph);
         }
@@ -132,7 +132,7 @@ public class App implements Callable<Integer> {
             hashCache.save();
         }
 
-        System.out.printf("Extracted %d nodes and %d relationships%n",
+        System.out.printf("Code Property Graph: %d nodes, %d relationships%n",
                 graph.nodeCount(), graph.relationshipCount());
 
         // Store in graph database
@@ -144,7 +144,7 @@ public class App implements Callable<Integer> {
                 store.clear();
             }
 
-            System.out.println("Saving graph to " + backend + "...");
+            System.out.println("Saving CPG to " + backend + "...");
             store.save(graph);
             System.out.println(store.summary());
             System.out.println("Done.");
@@ -293,7 +293,7 @@ public class App implements Callable<Integer> {
         System.out.println("Detected Gradle project — resolving dependencies...");
         try {
             // Create a temporary init script to print classpath
-            Path initScript = Files.createTempFile("code-graph-init", ".gradle");
+            Path initScript = Files.createTempFile("code-mem-graph-init", ".gradle");
             Files.writeString(initScript, """
                     allprojects {
                         task codeGraphClasspath {

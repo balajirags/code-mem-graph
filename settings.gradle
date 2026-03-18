@@ -10,5 +10,5 @@ plugins {
     id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }
 
-rootProject.name = 'code-graph'
+rootProject.name = 'code-mem-graph'
 include('app')

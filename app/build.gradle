@@ -43,6 +43,12 @@ dependencies {
 
     // YAML config support
     implementation libs.snakeyaml
+
+    // JSON parsing for external parser output
+    implementation libs.gson
+
+    // Kotlin compiler for parsing Kotlin source code
+    implementation libs.kotlin.compiler
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
@@ -58,14 +64,14 @@ application {
 }
 
 shadowJar {
-    archiveBaseName = 'code-graph'
+    archiveBaseName = 'code-mem-graph'
     archiveClassifier = ''
     archiveVersion = ''
     mergeServiceFiles()
 }
 
 tasks.named('run') {
-    // Use the root project dir as working directory so code-graph.properties is found
+    // Use the root project dir as working directory so application.yaml is found
     workingDir = rootProject.projectDir
 }
 

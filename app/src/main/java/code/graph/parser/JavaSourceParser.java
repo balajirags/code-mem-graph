@@ -25,12 +25,15 @@ import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * Parses Java source files using JavaParser and extracts a CodeGraph.
  */
-public class JavaSourceParser {
+public class JavaSourceParser implements SourceParser {
+
+    private static final Set<String> EXTENSIONS = Set.of(".java");
 
     private final JavaParser parser;
     private int resolvedCalls = 0;
@@ -709,5 +712,20 @@ public class JavaSourceParser {
                 graph.addRelationship(new CodeRelationship(nodeId, annId, RelationshipType.HAS_ANNOTATION));
             }
         }
+    }
+
+    @Override
+    public Set<String> getSupportedExtensions() {
+        return EXTENSIONS;
+    }
+
+    @Override
+    public String getLanguageName() {
+        return "Java";
+    }
+
+    @Override
+    public boolean supportsIncremental() {
+        return hashCache != null;
     }
 }

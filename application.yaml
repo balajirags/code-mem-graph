@@ -1,4 +1,4 @@
-# code-graph configuration
+# code-mem-graph configuration
 # Place this file as ./application.yaml or pass --config <path>
 
 backend: kuzu
@@ -10,4 +10,4 @@ neo4j:
   database: neo4j
 
 kuzu:
-  db-path: ./code-graph-db
+  db-path: ./code-mem-graph-db

@@ -1,20 +1,11 @@
-# code-graph
+# code-mem-graph
 
-A CLI tool that parses Java source code into an AST using [JavaParser](https://javaparser.org/) and builds a knowledge graph in [Neo4j](https://neo4j.com/) or [KuzuDB](https://kuzudb.com/).
+A CLI tool that parses Java source code and builds a Code Property Graph (CPG) in [Neo4j](https://neo4j.com/) or [KuzuDB](https://kuzudb.com/) using [JavaParser](https://javaparser.org/).
 
 ## What it extracts
 
-### Knowledge graph (default command)
-
-- **Nodes**: packages, classes, interfaces, enums, records, methods, constructors, fields (including record components), parameters, annotation types
-- **Relationships**: CONTAINS, EXTENDS, IMPLEMENTS, CALLS, RETURNS, HAS_PARAMETER, OF_TYPE, HAS_ANNOTATION, OVERRIDES, THROWS
-
-### Code Property Graph (`cpg` subcommand)
-
-Everything above, plus:
-
-- **Nodes**: files, statements (IF, FOR, FOREACH, WHILE, DO_WHILE, RETURN, THROW, TRY, SWITCH, EXPRESSION, etc.)
-- **Relationships**: SOURCE_FILE (type → file), AST_CHILD (method → statements), CFG_NEXT (control flow between statements), DATA_FLOW (variable definition → use)
+- **Nodes**: packages, classes, interfaces, enums, records, methods, constructors, fields (including record components), parameters, annotation types, files, statements (IF, FOR, FOREACH, WHILE, DO_WHILE, RETURN, THROW, TRY, SWITCH, EXPRESSION, etc.)
+- **Relationships**: CONTAINS, EXTENDS, IMPLEMENTS, CALLS, RETURNS, HAS_PARAMETER, OF_TYPE, HAS_ANNOTATION, OVERRIDES, THROWS, SOURCE_FILE (type → file), AST_CHILD (method → statements), CFG_NEXT (control flow between statements), DATA_FLOW (variable definition → use)
 
 ## Prerequisites
 
@@ -37,10 +28,10 @@ Build a self-contained JAR with all dependencies bundled:
 ./gradlew shadowJar
 ```
 
-This produces `app/build/libs/code-graph.jar` (~110 MB) that can be run anywhere Java 21+ is installed:
+This produces `app/build/libs/code-mem-graph.jar` (~110 MB) that can be run anywhere Java 21+ is installed:
 
 ```bash
-java -jar app/build/libs/code-graph.jar /path/to/java/project
+java -jar app/build/libs/code-mem-graph.jar <Source /path/to/java/project>
 ```
 
 ## Run
@@ -48,12 +39,12 @@ java -jar app/build/libs/code-graph.jar /path/to/java/project
 ### Using KuzuDB (default — no server required)
 
 ```bash
-./gradlew run --args="/path/to/java/project"
+./gradlew run --args="<Source directory /path/to/java/project>"
 ```
 
 The path should point to the **Java project root directory**. The tool automatically detects the source root by looking for `src/main/java`, then `src`, and falls back to the given directory.
 
-This creates a `./code-graph-db` directory with the embedded KuzuDB database.
+This creates a `./kuzu_db/<project-name>-db` directory with the embedded KuzuDB database.
 
 ### Using Neo4j
 
@@ -74,7 +65,7 @@ Then run:
 
 ### Incremental parsing
 
-Use `--incremental` to only re-parse files that have changed since the last run. File hashes (SHA-256) are stored in `.code-graph-hashes` inside the project root:
+Use `--incremental` to only re-parse files that have changed since the last run. File hashes (SHA-256) are stored in `.code-mem-graph-hashes` inside the project root:
 
 ```bash
 ./gradlew run --args="/path/to/java/project --incremental"
@@ -97,7 +88,7 @@ Use the `export` subcommand to export the parsed graph directly to DOT (Graphviz
 ./gradlew run --args="export /path/to/java/project -f graphml -o graph.graphml"
 
 # Using the fat JAR
-java -jar app/build/libs/code-graph.jar export /path/to/project -f json -o graph.json
+java -jar app/build/libs/code-mem-graph.jar export /path/to/project -f json -o graph.json
 ```
 
 Supported formats:
@@ -107,30 +98,10 @@ Supported formats:
 | DOT | `dot` | Graphviz DOT format. Render with `dot -Tpng graph.dot -o graph.png`. |
 | GraphML | `graphml` | XML-based graph format. Import into yEd, Gephi, Cytoscape, etc. |
 
-### Code Property Graph
-
-Use the `cpg` subcommand to build a Code Property Graph that includes AST structure, control flow, and data flow edges in addition to the structural knowledge graph:
-
-```bash
-# CPG with KuzuDB (default)
-./gradlew run --args="cpg /path/to/java/project"
-
-# CPG with Neo4j
-./gradlew run --args="cpg /path/to/java/project -b neo4j --neo4j-password changeme"
-
-# Incremental CPG
-./gradlew run --args="cpg /path/to/java/project --incremental"
-
-# Using the fat JAR
-java -jar app/build/libs/code-graph.jar cpg /path/to/project
-```
-
-The CPG database path uses a `-cpg-db` suffix by default (e.g., `./inventory-service-cpg-db`).
-
 ### CLI options
 
 ```
-Usage: code-graph [-hV] [--incremental] [-b=<backend>]
+Usage: code-mem-graph [-hV] [--incremental] [-b=<backend>]
                   [-c=<configPath>] [--cp=<classpath>]
                   [--kuzu-db=<kuzuDbPath>] [--neo4j-database=<neo4jDatabase>]
                   [--neo4j-password=<neo4jPassword>] [--neo4j-uri=<neo4jUri>]
@@ -151,13 +122,12 @@ Usage: code-graph [-hV] [--incremental] [-b=<backend>]
   -V, --version                Print version
 
 Commands:
-  cpg     Build a Code Property Graph (AST + CFG + data flow)
   export  Export graph to DOT, GraphML, or JSON (no database needed)
 ```
 
 By default, each run **replaces** the existing graph data. Use `--incremental` to keep existing data and only add/update changed files.
 
-The database name is derived from the input project directory (e.g., `inventory-service` → Neo4j database `inventory-service`, KuzuDB path `./inventory-service-db`). Override with `--neo4j-database` or `--kuzu-db`.
+The database name is derived from the input project directory (e.g., `inventory-service` → Neo4j database `inventory-service`, KuzuDB path `./kuzu_db/inventory-service-db`). Override with `--neo4j-database` or `--kuzu-db`.
 
 ## Configuration file
 
@@ -173,7 +143,7 @@ neo4j:
   database: neo4j
 
 kuzu:
-  db-path: ./code-graph-db
+  db-path: ./code-mem-graph-db
 ```
 
 CLI flags override values from the config file.
@@ -184,7 +154,7 @@ CLI flags override values from the config file.
 
 ```bash
 docker run -p 8000:8000 \
-  -v $(pwd)/code-graph-db:/database \
+  -v $(pwd)/code-mem-graph-db:/database \
   --rm kuzudb/explorer:latest
 ```
 
@@ -194,7 +164,7 @@ Open http://localhost:8000 and run Cypher queries.
 
 ```bash
 brew install kuzu
-kuzu ./code-graph-db
+kuzu ./code-mem-graph-db
 ```
 
 ### Neo4j Browser
@@ -267,8 +237,7 @@ MATCH (c:Class)-[:SOURCE_FILE]->(f:File) RETURN c.name, f.name
 
 ```
 app/src/main/java/code/graph/
-├── App.java                    # CLI entry point (picocli)
-├── CpgCommand.java             # CPG subcommand (AST + CFG + data flow)
+├── App.java                    # CLI entry point (picocli) — builds CPG by default
 ├── ExportCommand.java          # Export subcommand (DOT/GraphML/JSON)
 ├── config/
 │   └── AppConfig.java          # Properties file loader

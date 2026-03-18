@@ -161,6 +161,30 @@ public class Neo4jGraphStore implements GraphStore {
             case PARAMETER -> "Parameter";
             case FILE -> "File";
             case STATEMENT -> "Statement";
+            // JavaScript/TypeScript
+            case MODULE -> "Module";
+            case FUNCTION -> "Function";
+            case ARROW_FUNCTION -> "ArrowFunction";
+            case COMPONENT -> "Component";
+            case HOOK -> "Hook";
+            case JSX_ELEMENT -> "JSXElement";
+            // Python
+            case DECORATOR -> "Decorator";
+            case GENERATOR -> "Generator";
+            case ASYNC_FUNCTION -> "AsyncFunction";
+            case COMPREHENSION -> "Comprehension";
+            // Kotlin
+            case DATA_CLASS -> "DataClass";
+            case SEALED_CLASS -> "SealedClass";
+            case SEALED_INTERFACE -> "SealedInterface";
+            case OBJECT_DECL -> "ObjectDecl";
+            case COMPANION_OBJECT -> "CompanionObject";
+            case EXTENSION_FUNCTION -> "ExtensionFunction";
+            case SUSPEND_FUNCTION -> "SuspendFunction";
+            case PROPERTY -> "Property";
+            case LAMBDA -> "Lambda";
+            case INIT_BLOCK -> "InitBlock";
+            case TYPE_ALIAS -> "TypeAlias";
         };
     }
 }

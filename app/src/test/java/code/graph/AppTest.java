@@ -370,7 +370,7 @@ class AppTest {
         new DotExporter().export(graph, writer);
         String dot = writer.toString();
 
-        assertTrue(dot.startsWith("digraph code_graph {"), "Should start with digraph");
+        assertTrue(dot.startsWith("digraph code_mem_graph {"), "Should start with digraph");
         assertTrue(dot.contains("type:com.A"), "Should contain node A");
         assertTrue(dot.contains("type:com.B"), "Should contain node B");
         assertTrue(dot.contains("EXTENDS"), "Should contain EXTENDS edge");
@@ -420,7 +420,7 @@ class AppTest {
                 }
                 """);
 
-        Path cacheFile = tempDir.resolve(".code-graph-hashes");
+        Path cacheFile = tempDir.resolve(".code-mem-graph-hashes");
 
         // First run: all files parsed, cache created
         FileHashCache cache1 = new FileHashCache(cacheFile);

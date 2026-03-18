@@ -13,3 +13,11 @@ build
 kuzu_db/*
 *db
 *kz
+
+# JavaScript parser dependencies
+parsers/javascript/node_modules/
+parsers/javascript/package-lock.json
+
+# Python cache
+__pycache__/
+*.pyc

@@ -8,7 +8,7 @@ import java.util.*;
 
 /**
  * Tracks file hashes to support incremental parsing.
- * Stores SHA-256 hashes in a simple properties file (.code-graph-hashes).
+ * Stores SHA-256 hashes in a simple properties file (.code-mem-graph-hashes).
  */
 public class FileHashCache {
 
@@ -63,7 +63,7 @@ public class FileHashCache {
     public void save() {
         try {
             StringBuilder sb = new StringBuilder();
-            sb.append("# code-graph file hash cache — do not edit\n");
+            sb.append("# code-mem-graph file hash cache — do not edit\n");
             for (Map.Entry<String, String> entry : currentHashes.entrySet()) {
                 sb.append(entry.getValue()).append("  ").append(entry.getKey()).append("\n");
             }

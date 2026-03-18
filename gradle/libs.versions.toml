@@ -9,6 +9,8 @@ neo4j-driver = "5.28.4"
 kuzu = "0.11.3"
 slf4j = "2.0.16"
 snakeyaml = "2.4"
+gson = "2.11.0"
+kotlin = "2.0.21"
 
 [libraries]
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
@@ -19,3 +21,5 @@ neo4j-driver = { module = "org.neo4j.driver:neo4j-java-driver", version.ref = "n
 kuzu = { module = "com.kuzudb:kuzu", version.ref = "kuzu" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
 snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+kotlin-compiler = { module = "org.jetbrains.kotlin:kotlin-compiler-embeddable", version.ref = "kotlin" }

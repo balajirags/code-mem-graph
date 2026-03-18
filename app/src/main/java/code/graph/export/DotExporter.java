@@ -15,7 +15,7 @@ public class DotExporter implements GraphExporter {
 
     @Override
     public void export(CodeGraph graph, Writer writer) throws IOException {
-        writer.write("digraph code_graph {\n");
+        writer.write("digraph code_mem_graph {\n");
         writer.write("  rankdir=LR;\n");
         writer.write("  node [shape=box, style=filled, fontname=\"Helvetica\"];\n\n");
 

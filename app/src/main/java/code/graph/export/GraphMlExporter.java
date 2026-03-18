@@ -26,7 +26,7 @@ public class GraphMlExporter implements GraphExporter {
         writer.write("  <key id=\"qualifiedName\" for=\"node\" attr.name=\"qualifiedName\" attr.type=\"string\"/>\n");
         writer.write("  <key id=\"relType\" for=\"edge\" attr.name=\"relType\" attr.type=\"string\"/>\n");
 
-        writer.write("  <graph id=\"code-graph\" edgedefault=\"directed\">\n");
+        writer.write("  <graph id=\"code-mem-graph\" edgedefault=\"directed\">\n");
 
         // Nodes
         for (Map.Entry<String, CodeNode> entry : graph.getNodes().entrySet()) {

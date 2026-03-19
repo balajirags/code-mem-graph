@@ -328,6 +328,64 @@ RETURN s1.code, s2.code
 MATCH (c:Class)-[:SOURCE_FILE]->(f:File) RETURN c.name, f.name
 ```
 
+## MCP Server
+
+The project includes an MCP (Model Context Protocol) server that lets AI assistants (VS Code Copilot, Claude Desktop, etc.) query your code graph directly.
+
+### Start the MCP server
+
+```bash
+# KuzuDB (default)
+cmg-mcp --db-path ./bin/kuzu_db/my-project-db
+
+# Neo4j
+cmg-mcp --backend neo4j --neo4j-uri bolt://localhost:7687 --neo4j-password changeme
+```
+
+### Available tools
+
+| Tool | Description |
+|------|-------------|
+| `query` | Run a read-only Cypher query against the code graph |
+| `get_schema` | List all node types, relationship types, and properties |
+| `summary` | Node and relationship counts |
+| `search_nodes` | Find nodes by name pattern and optional type (e.g. `*Service*`) |
+| `get_callers` | Find all callers of a method/function |
+| `get_callees` | Find all methods/functions called by a given method |
+| `get_class_hierarchy` | EXTENDS/IMPLEMENTS tree for a class |
+| `get_control_flow` | CFG edges for a method |
+| `get_data_flow` | DATA_FLOW edges for a method/variable |
+
+### VS Code (Copilot) integration
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "code-graph": {
+      "command": "cmg-mcp",
+      "args": ["--db-path", "./bin/kuzu_db/my-project-db"]
+    }
+  }
+}
+```
+
+### Claude Desktop integration
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "code-graph": {
+      "command": "/path/to/bin/cmg-mcp",
+      "args": ["--db-path", "/path/to/bin/kuzu_db/my-project-db"]
+    }
+  }
+}
+```
+
 ## Project structure
 
 ```
@@ -335,6 +393,7 @@ install.sh                      # Build & install script — creates bin/ execut
 bin/
 ├── cmg-java                    # Java/Kotlin runner (wraps fat JAR)
 ├── cmg-js                      # JavaScript/TypeScript runner (wraps Node.js parser)
+├── cmg-mcp                     # MCP server (wraps mcp/server.py)
 └── cmg-python                  # Python runner (wraps Python parser)
 
 app/src/main/java/code/graph/
@@ -376,6 +435,10 @@ parsers/
     ├── parse.py                # ast-based Python parser (standalone)
     ├── store.py                # KuzuDB + Neo4j graph store
     └── requirements.txt
+
+mcp/
+├── server.py                   # MCP server — exposes code graph to AI assistants
+└── requirements.txt
 ```
 
 ## Tech stack

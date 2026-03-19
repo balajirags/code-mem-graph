@@ -99,8 +99,11 @@ public class App implements Callable<Integer> {
                 neo4jDatabase = projectName;
             }
         }
-        // Always use kuzu_db/<project-name>-db for KuzuDB
-        java.nio.file.Path kuzuDir = java.nio.file.Path.of("kuzu_db");
+        // Always use kuzu_db/<project-name>-db for KuzuDB, rooted under CMG_BIN_DIR if set
+        String binDir = System.getenv("CMG_BIN_DIR");
+        java.nio.file.Path kuzuDir = binDir != null
+                ? java.nio.file.Path.of(binDir, "kuzu_db")
+                : java.nio.file.Path.of("kuzu_db");
         if (!java.nio.file.Files.exists(kuzuDir)) {
             java.nio.file.Files.createDirectories(kuzuDir);
         }

@@ -30,7 +30,7 @@ class KuzuStore {
         ];
 
         for (const t of nodeTypes) {
-            await this._query(`CREATE NODE TABLE IF NOT EXISTS ${t} (id STRING, name STRING, qualifiedName STRING, visibility STRING, isAbstract BOOLEAN, isStatic BOOLEAN, isFinal BOOLEAN, returnType STRING, lineNumber INT64, type STRING, external BOOLEAN, path STRING, PRIMARY KEY (id))`);
+            await this._query(`CREATE NODE TABLE IF NOT EXISTS ${t} (id STRING, name STRING, qualifiedName STRING, visibility STRING, isAbstract BOOLEAN, isStatic BOOLEAN, isFinal BOOLEAN, returnType STRING, lineNumber INT64, endLineNumber INT64, statementType STRING, code STRING, type STRING, external BOOLEAN, path STRING, PRIMARY KEY (id))`);
         }
 
         const relDefs = [
@@ -45,8 +45,8 @@ class KuzuStore {
             "CREATE REL TABLE IF NOT EXISTS OVERRIDES (FROM Method TO Method, FROM ExtensionFunction TO Method)",
             "CREATE REL TABLE IF NOT EXISTS THROWS (FROM Method TO Class)",
             "CREATE REL TABLE IF NOT EXISTS SOURCE_FILE (FROM Class TO File, FROM Interface TO File, FROM Enum TO File, FROM Record TO File, FROM AnnotationType TO File, FROM Module TO File, FROM Component TO File, FROM Function TO File, FROM DataClass TO File, FROM SealedClass TO File, FROM SealedInterface TO File, FROM ObjectDecl TO File, FROM ExtensionFunction TO File)",
-            "CREATE REL TABLE IF NOT EXISTS AST_CHILD (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement, FROM Function TO Statement, FROM ArrowFunction TO Statement, order INT64)",
-            "CREATE REL TABLE IF NOT EXISTS CFG_NEXT (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement, backEdge BOOLEAN)",
+            "CREATE REL TABLE IF NOT EXISTS AST_CHILD (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement, FROM Function TO Statement, FROM ArrowFunction TO Statement, FROM AsyncFunction TO Statement, FROM Generator TO Statement, FROM Component TO Statement, FROM Hook TO Statement, ast_order INT64)",
+            "CREATE REL TABLE IF NOT EXISTS CFG_NEXT (FROM Method TO Statement, FROM Constructor TO Statement, FROM Statement TO Statement, FROM Function TO Statement, FROM ArrowFunction TO Statement, FROM AsyncFunction TO Statement, FROM Generator TO Statement, FROM Component TO Statement, FROM Hook TO Statement, backEdge BOOLEAN)",
             "CREATE REL TABLE IF NOT EXISTS DATA_FLOW (FROM Statement TO Statement, variable STRING)",
             "CREATE REL TABLE IF NOT EXISTS IMPORTS (FROM Module TO Module, importedName STRING, localName STRING)",
             "CREATE REL TABLE IF NOT EXISTS EXPORTS (FROM Module TO Function, FROM Module TO ArrowFunction, FROM Module TO Component, FROM Module TO Class)",
@@ -107,7 +107,7 @@ class KuzuStore {
 
             const props = node.properties || {};
             for (const [key, val] of Object.entries(props)) {
-                if (['visibility', 'isAbstract', 'isStatic', 'isFinal', 'returnType', 'lineNumber', 'type', 'external', 'path'].includes(key)) {
+                if (['visibility', 'isAbstract', 'isStatic', 'isFinal', 'returnType', 'lineNumber', 'endLineNumber', 'statementType', 'code', 'type', 'external', 'path'].includes(key)) {
                     if (typeof val === 'boolean') cypher += `, ${key}: ${val}`;
                     else if (typeof val === 'number') cypher += `, ${key}: ${val}`;
                     else cypher += `, ${key}: '${escaped(String(val))}'`;
@@ -141,7 +141,7 @@ class KuzuStore {
 
     async summary() {
         let totalNodes = 0;
-        const tables = ['Module', 'Function', 'ArrowFunction', 'Component', 'Hook', 'Class', 'Method', 'File'];
+        const tables = ['Module', 'Function', 'ArrowFunction', 'Component', 'Hook', 'Class', 'Method', 'Constructor', 'File', 'Statement'];
         for (const t of tables) {
             try {
                 const result = await this.conn.query(`MATCH (n:${t}) RETURN count(n) AS c`);

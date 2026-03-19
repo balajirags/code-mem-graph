@@ -9,7 +9,7 @@ the Java CpgParser for full CPG edge coverage.
 
 Usage: python parse.py <directory> [options]
   --backend kuzu|neo4j|json   Graph backend (default: kuzu)
-  --db-path <path>            KuzuDB database path (default: ./kuzu_db/<repo-name>-db)
+  --db-path <path>            KuzuDB database path (default: <bin-dir>/kuzu_db/<repo-name>-db)
   --clear                     Clear existing graph before writing
   --neo4j-uri <uri>           Neo4j URI (default: bolt://localhost:7687)
   --neo4j-user <user>         Neo4j username (default: neo4j)
@@ -684,7 +684,7 @@ def main():
     parser.add_argument('--backend', choices=['kuzu', 'neo4j', 'json'],
                         default='kuzu', help='Graph backend (default: kuzu)')
     parser.add_argument('--db-path', default=None,
-                        help='KuzuDB database path (default: ./kuzu_db/<repo-name>-db)')
+                        help='KuzuDB database path (default: <bin-dir>/kuzu_db/<repo-name>-db)')
     parser.add_argument('--clear', action='store_true',
                         help='Clear existing graph before writing')
     parser.add_argument('--neo4j-uri', default='bolt://localhost:7687')
@@ -695,9 +695,10 @@ def main():
     args = parser.parse_args()
     root_dir = Path(args.directory).resolve()
 
-    # Default db path: ./kuzu_db/<repo-name>-db
+    # Default db path: <bin-dir>/kuzu_db/<repo-name>-db (uses CMG_BIN_DIR if set)
     if args.db_path is None:
-        args.db_path = str(Path('kuzu_db') / f'{root_dir.name}-db')
+        base_dir = os.environ.get('CMG_BIN_DIR', '.')
+        args.db_path = str(Path(base_dir) / 'kuzu_db' / f'{root_dir.name}-db')
 
     if not root_dir.exists():
         print(f"Directory not found: {root_dir}", file=sys.stderr)

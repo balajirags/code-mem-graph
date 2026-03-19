@@ -7,8 +7,8 @@ A CLI tool that parses source code and builds a Code Property Graph (CPG) in [Ne
 | Language | Parser | CPG (control flow + data flow) |
 |----------|--------|-------------------------------|
 | Java | [JavaParser](https://javaparser.org/) | Yes |
-| Kotlin | Kotlin Compiler PSI | Structural only |
-| JavaScript/React/TypeScript | Babel (via Node.js) | Structural only |
+| Kotlin | Kotlin Compiler PSI | Yes |
+| JavaScript/React/TypeScript | Babel (via Node.js) + custom CFG/DFG walker | Yes |
 | Python | Python `ast` module + custom CFG/DFG walker | Yes |
 
 ## What it extracts
@@ -68,7 +68,14 @@ cmg-python /path/to/flask/app
 
 ## Run
 
-Each language has its own runner. All runners default to **KuzuDB** and create the database at `./kuzu_db/<project-name>-db`.
+Each language has its own runner. All runners default to **KuzuDB** and create the database at `<base-dir>/kuzu_db/<project-name>-db`.
+
+By default `<base-dir>` is the current working directory. Set the `CMG_BIN_DIR` environment variable to override the base directory — all parsers will then create the database under `$CMG_BIN_DIR/kuzu_db/` instead:
+
+```bash
+export CMG_BIN_DIR="$(pwd)/bin"
+cmg-java /path/to/project   # → bin/kuzu_db/<project-name>-db
+```
 
 ### Java / Kotlin
 

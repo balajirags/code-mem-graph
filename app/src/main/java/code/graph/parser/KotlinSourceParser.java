@@ -28,7 +28,12 @@ public class KotlinSourceParser implements SourceParser {
 
     private final Path sourceRoot;
     private final Set<String> internalTypes = new HashSet<>();
-    private final Set<String> internalMethods = new HashSet<>();  // Track methods for call resolution
+    private final Set<String> internalMethods = new HashSet<>();
+
+    // CPG counters
+    private int cpgStmtCount = 0;
+    private int cpgCfgEdgeCount = 0;
+    private int cpgDataFlowCount = 0;  // Track methods for call resolution
 
     public KotlinSourceParser(Path sourceRoot) {
         this.sourceRoot = sourceRoot;
@@ -86,6 +91,7 @@ public class KotlinSourceParser implements SourceParser {
 
                     // Parse the file contents
                     ParseContext ctx = new ParseContext(graph, fileId, relativePath, file);
+                    ctx.source = source;
                     parseKtFile(ktFile, ctx);
 
                     resolvedCalls += ctx.resolvedCalls;
@@ -98,6 +104,9 @@ public class KotlinSourceParser implements SourceParser {
 
             System.out.printf("Method calls: %d resolved, %d best-effort (unresolved)%n",
                     resolvedCalls, unresolvedCalls);
+
+            System.out.printf("CPG: %d statement nodes, %d CFG edges, %d data-flow edges%n",
+                    cpgStmtCount, cpgCfgEdgeCount, cpgDataFlowCount);
 
         } finally {
             Disposer.dispose(disposable);
@@ -435,6 +444,9 @@ public class KotlinSourceParser implements SourceParser {
         KtExpression bodyExpr = function.getBodyExpression();
         if (bodyExpr != null) {
             parseExpressionsForCalls(bodyExpr, funcId, containerQualifiedName, ctx);
+
+            // CPG: process function body for statement-level edges
+            processFunctionBodyForCpg(bodyExpr, funcId, qualifiedName, ctx);
         }
     }
 
@@ -514,6 +526,9 @@ public class KotlinSourceParser implements SourceParser {
         KtExpression body = initBlock.getBody();
         if (body != null) {
             parseExpressionsForCalls(body, initId, classQualifiedName, ctx);
+
+            // CPG: process init block body for statement-level edges
+            processFunctionBodyForCpg(body, initId, classQualifiedName + ".<init>", ctx);
         }
     }
 
@@ -577,6 +592,292 @@ public class KotlinSourceParser implements SourceParser {
         for (PsiElement child : element.getChildren()) {
             parseExpressionsForCalls(child, callerId, callerPackage, ctx);
         }
+    }
+
+    // ---- CPG: Statement-level analysis ----
+
+    private void processFunctionBodyForCpg(KtExpression body, String parentId, String qualifiedName, ParseContext ctx) {
+        List<KtExpression> stmts;
+        if (body instanceof KtBlockExpression block) {
+            stmts = block.getStatements();
+        } else {
+            // Expression-bodied function: fun foo() = expr
+            stmts = List.of(body);
+        }
+
+        int[] counter = {0};
+        Map<String, String> varDefs = new HashMap<>();
+        processKtStatements(stmts, parentId, qualifiedName, counter, varDefs, List.of(parentId), ctx);
+    }
+
+    private List<String> processKtStatements(List<KtExpression> stmts, String parentId,
+                                             String qualifiedName, int[] counter,
+                                             Map<String, String> varDefs,
+                                             List<String> cfgPredecessors, ParseContext ctx) {
+        List<String> currentPreds = new ArrayList<>(cfgPredecessors);
+
+        for (KtExpression stmt : stmts) {
+            // Skip empty block wrappers
+            if (stmt instanceof KtBlockExpression block) {
+                currentPreds = processKtStatements(block.getStatements(), parentId,
+                        qualifiedName, counter, varDefs, currentPreds, ctx);
+                continue;
+            }
+
+            String stmtId = "stmt:" + qualifiedName + ":S" + (counter[0]++);
+            String stmtType = classifyKtStatement(stmt);
+            String code = stmt.getText();
+            if (code.length() > 200) code = code.substring(0, 200) + "...";
+            int line = getLineNumber(stmt, ctx.source);
+            int endLine = getEndLineNumber(stmt, ctx.source);
+
+            CodeNode stmtNode = new CodeNode(stmtId, NodeType.STATEMENT, stmtType,
+                    qualifiedName + ":S" + (counter[0] - 1))
+                    .withProperty("statementType", stmtType)
+                    .withProperty("code", code)
+                    .withProperty("lineNumber", line)
+                    .withProperty("endLineNumber", endLine);
+            ctx.graph.addNode(stmtNode);
+            cpgStmtCount++;
+
+            // AST_CHILD: parent -> this statement
+            ctx.graph.addRelationship(new CodeRelationship(parentId, stmtId, RelationshipType.AST_CHILD)
+                    .withProperty("ast_order", counter[0] - 1));
+
+            // CFG_NEXT from predecessors -> this statement
+            for (String pred : currentPreds) {
+                ctx.graph.addRelationship(new CodeRelationship(pred, stmtId, RelationshipType.CFG_NEXT));
+                cpgCfgEdgeCount++;
+            }
+
+            // Data flow
+            processKtDataFlow(stmt, stmtId, varDefs, ctx);
+
+            // Handle compound statements
+            if (stmt instanceof KtIfExpression ifExpr) {
+                currentPreds = processKtIf(ifExpr, stmtId, qualifiedName, counter, varDefs, ctx);
+            } else if (stmt instanceof KtWhenExpression whenExpr) {
+                currentPreds = processKtWhen(whenExpr, stmtId, qualifiedName, counter, varDefs, ctx);
+            } else if (stmt instanceof KtForExpression forExpr) {
+                currentPreds = processKtLoopBody(forExpr.getBody(), stmtId, qualifiedName, counter, varDefs, ctx);
+            } else if (stmt instanceof KtWhileExpression whileExpr) {
+                currentPreds = processKtLoopBody(whileExpr.getBody(), stmtId, qualifiedName, counter, varDefs, ctx);
+            } else if (stmt instanceof KtDoWhileExpression doWhileExpr) {
+                currentPreds = processKtLoopBody(doWhileExpr.getBody(), stmtId, qualifiedName, counter, varDefs, ctx);
+            } else if (stmt instanceof KtTryExpression tryExpr) {
+                currentPreds = processKtTry(tryExpr, stmtId, qualifiedName, counter, varDefs, ctx);
+            } else if (stmt instanceof KtReturnExpression || stmt instanceof KtThrowExpression) {
+                currentPreds = List.of(); // terminal
+            } else if (stmt instanceof KtBreakExpression || stmt instanceof KtContinueExpression) {
+                currentPreds = List.of();
+            } else {
+                currentPreds = List.of(stmtId);
+            }
+        }
+
+        return currentPreds;
+    }
+
+    private List<String> processKtIf(KtIfExpression ifExpr, String stmtId,
+                                     String qualifiedName, int[] counter,
+                                     Map<String, String> varDefs, ParseContext ctx) {
+        List<String> exits = new ArrayList<>();
+
+        // Then branch
+        KtExpression thenExpr = ifExpr.getThen();
+        if (thenExpr != null) {
+            List<KtExpression> thenStmts = unwrapKtBlock(thenExpr);
+            exits.addAll(processKtStatements(thenStmts, stmtId, qualifiedName,
+                    counter, varDefs, List.of(stmtId), ctx));
+        }
+
+        // Else branch
+        KtExpression elseExpr = ifExpr.getElse();
+        if (elseExpr != null) {
+            List<KtExpression> elseStmts = unwrapKtBlock(elseExpr);
+            exits.addAll(processKtStatements(elseStmts, stmtId, qualifiedName,
+                    counter, varDefs, List.of(stmtId), ctx));
+        } else {
+            exits.add(stmtId);
+        }
+
+        return exits;
+    }
+
+    private List<String> processKtWhen(KtWhenExpression whenExpr, String stmtId,
+                                       String qualifiedName, int[] counter,
+                                       Map<String, String> varDefs, ParseContext ctx) {
+        List<String> exits = new ArrayList<>();
+        boolean hasElse = false;
+
+        for (KtWhenEntry entry : whenExpr.getEntries()) {
+            if (entry.isElse()) hasElse = true;
+            KtExpression body = entry.getExpression();
+            if (body != null) {
+                List<KtExpression> bodyStmts = unwrapKtBlock(body);
+                exits.addAll(processKtStatements(bodyStmts, stmtId, qualifiedName,
+                        counter, varDefs, List.of(stmtId), ctx));
+            }
+        }
+
+        if (!hasElse) {
+            exits.add(stmtId);
+        }
+
+        if (exits.isEmpty()) {
+            exits.add(stmtId);
+        }
+
+        return exits;
+    }
+
+    private List<String> processKtLoopBody(KtExpression body, String loopStmtId,
+                                           String qualifiedName, int[] counter,
+                                           Map<String, String> varDefs, ParseContext ctx) {
+        if (body == null) return List.of(loopStmtId);
+
+        List<KtExpression> bodyStmts = unwrapKtBlock(body);
+        List<String> bodyExits = processKtStatements(bodyStmts, loopStmtId, qualifiedName,
+                counter, varDefs, List.of(loopStmtId), ctx);
+
+        // Back edge: body exits -> loop head
+        for (String exit : bodyExits) {
+            ctx.graph.addRelationship(new CodeRelationship(exit, loopStmtId, RelationshipType.CFG_NEXT)
+                    .withProperty("backEdge", true));
+            cpgCfgEdgeCount++;
+        }
+
+        return List.of(loopStmtId);
+    }
+
+    private List<String> processKtTry(KtTryExpression tryExpr, String stmtId,
+                                      String qualifiedName, int[] counter,
+                                      Map<String, String> varDefs, ParseContext ctx) {
+        List<String> exits = new ArrayList<>();
+
+        // Try block
+        KtBlockExpression tryBlock = tryExpr.getTryBlock();
+        if (tryBlock != null) {
+            exits.addAll(processKtStatements(tryBlock.getStatements(), stmtId, qualifiedName,
+                    counter, varDefs, List.of(stmtId), ctx));
+        }
+
+        // Catch clauses
+        for (KtCatchClause cc : tryExpr.getCatchClauses()) {
+            KtExpression catchBody = cc.getCatchBody();
+            if (catchBody != null) {
+                List<KtExpression> catchStmts = unwrapKtBlock(catchBody);
+                exits.addAll(processKtStatements(catchStmts, stmtId, qualifiedName,
+                        counter, varDefs, List.of(stmtId), ctx));
+            }
+        }
+
+        // Finally block
+        KtFinallySection finallySection = tryExpr.getFinallyBlock();
+        if (finallySection != null) {
+            KtBlockExpression finallyBody = finallySection.getFinalExpression();
+            if (finallyBody != null) {
+                List<String> finallyExits = processKtStatements(finallyBody.getStatements(), stmtId,
+                        qualifiedName, counter, varDefs, List.of(stmtId), ctx);
+                exits.clear();
+                exits.addAll(finallyExits);
+            }
+        }
+
+        return exits;
+    }
+
+    // -- Data flow tracking --
+
+    private void processKtDataFlow(KtExpression stmt, String stmtId,
+                                   Map<String, String> varDefs, ParseContext ctx) {
+        // Collect reads: all name references
+        Set<String> reads = new LinkedHashSet<>();
+        collectNameReferences(stmt, reads);
+
+        // DATA_FLOW from previous definitions to current uses
+        for (String varName : reads) {
+            String defStmtId = varDefs.get(varName);
+            if (defStmtId != null) {
+                ctx.graph.addRelationship(new CodeRelationship(defStmtId, stmtId, RelationshipType.DATA_FLOW)
+                        .withProperty("variable", varName));
+                cpgDataFlowCount++;
+            }
+        }
+
+        // Track writes: property declarations
+        if (stmt instanceof KtProperty prop) {
+            String name = prop.getName();
+            if (name != null) varDefs.put(name, stmtId);
+        }
+        // Track writes: assignments
+        collectAssignments(stmt, stmtId, varDefs);
+    }
+
+    private void collectNameReferences(PsiElement element, Set<String> names) {
+        if (element instanceof KtNameReferenceExpression ref) {
+            names.add(ref.getReferencedName());
+        }
+        for (PsiElement child : element.getChildren()) {
+            collectNameReferences(child, names);
+        }
+    }
+
+    private void collectAssignments(PsiElement element, String stmtId, Map<String, String> varDefs) {
+        if (element instanceof KtBinaryExpression binExpr) {
+            String op = binExpr.getOperationReference().getText();
+            if ("=".equals(op) || "+=".equals(op) || "-=".equals(op) ||
+                    "*=".equals(op) || "/=".equals(op) || "%=".equals(op)) {
+                KtExpression left = binExpr.getLeft();
+                if (left instanceof KtNameReferenceExpression ref) {
+                    varDefs.put(ref.getReferencedName(), stmtId);
+                }
+                return;
+            }
+        }
+        for (PsiElement child : element.getChildren()) {
+            collectAssignments(child, stmtId, varDefs);
+        }
+    }
+
+    private static String classifyKtStatement(KtExpression stmt) {
+        if (stmt instanceof KtIfExpression) return "IF";
+        if (stmt instanceof KtWhenExpression) return "WHEN";
+        if (stmt instanceof KtForExpression) return "FOR";
+        if (stmt instanceof KtWhileExpression) return "WHILE";
+        if (stmt instanceof KtDoWhileExpression) return "DO_WHILE";
+        if (stmt instanceof KtReturnExpression) return "RETURN";
+        if (stmt instanceof KtThrowExpression) return "THROW";
+        if (stmt instanceof KtBreakExpression) return "BREAK";
+        if (stmt instanceof KtContinueExpression) return "CONTINUE";
+        if (stmt instanceof KtTryExpression) return "TRY";
+        if (stmt instanceof KtProperty) return "VAR_DECL";
+        return "EXPRESSION";
+    }
+
+    private static List<KtExpression> unwrapKtBlock(KtExpression expr) {
+        if (expr instanceof KtBlockExpression block) {
+            return block.getStatements();
+        }
+        return List.of(expr);
+    }
+
+    private static int getLineNumber(PsiElement element, String source) {
+        int offset = element.getTextOffset();
+        int line = 1;
+        for (int i = 0; i < offset && i < source.length(); i++) {
+            if (source.charAt(i) == '\n') line++;
+        }
+        return line;
+    }
+
+    private static int getEndLineNumber(PsiElement element, String source) {
+        int offset = element.getTextOffset() + element.getTextLength();
+        int line = 1;
+        for (int i = 0; i < offset && i < source.length(); i++) {
+            if (source.charAt(i) == '\n') line++;
+        }
+        return line;
     }
 
     private NodeType determineClassNodeType(KtClass ktClass) {
@@ -686,8 +987,10 @@ public class KotlinSourceParser implements SourceParser {
         final String relativePath;
         final Path filePath;
         final Set<String> imports = new HashSet<>();
+        String source;
         int resolvedCalls = 0;
         int unresolvedCalls = 0;
+        int skippedFiles = 0;
 
         ParseContext(CodeGraph graph, String fileId, String relativePath, Path filePath) {
             this.graph = graph;

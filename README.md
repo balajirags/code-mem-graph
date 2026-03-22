@@ -442,3 +442,7 @@ mcp/
 | MCP | Python MCP SDK |
 | Build | Gradle 9.2 / Java 21 |
 | Fat JAR | Shadow 9.0.0-beta12 |
+
+## License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

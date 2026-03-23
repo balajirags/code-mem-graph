@@ -10,4 +10,4 @@ neo4j:
   database: neo4j
 
 kuzu:
-  db-path: ./code-mem-graph-db
+  db-path: ./kuzu_db

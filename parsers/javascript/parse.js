@@ -807,11 +807,17 @@ function main() {
         }
     }
 
-    // Default db path: <bin-dir>/kuzu_db/<repo-name>-db (uses CMG_BIN_DIR if set)
+    // --db-path must be a directory; always generate DB file name inside it
+    let dbDir;
     if (!dbPath) {
-        const baseDir = process.env.CMG_BIN_DIR || '.';
-        dbPath = path.resolve(baseDir, 'kuzu_db', `${repoName}-db`);
+        dbDir = path.resolve(process.cwd(), 'kuzu_db');
+    } else {
+        dbDir = dbPath;
     }
+    if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+    }
+    dbPath = path.resolve(dbDir, `${repoName}-db`);
 
     if (!fs.existsSync(rootDir)) {
         console.error(`Directory not found: ${rootDir}`);

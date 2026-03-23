@@ -366,8 +366,8 @@ def main():
     )
     parser.add_argument('--backend', choices=['kuzu', 'neo4j'], default='kuzu',
                         help='Graph backend (default: kuzu)')
-    parser.add_argument('--db-path', default=None,
-                        help='KuzuDB database path')
+    parser.add_argument('--db-path', required=True,
+                        help='KuzuDB database file path (required)')
     parser.add_argument('--neo4j-uri', default='bolt://localhost:7687')
     parser.add_argument('--neo4j-user', default='neo4j')
     parser.add_argument('--neo4j-password', default='')
@@ -376,8 +376,8 @@ def main():
     args = parser.parse_args()
 
     if args.backend == 'kuzu':
-        if not args.db_path:
-            print("Error: --db-path is required for KuzuDB backend", file=sys.stderr)
+        if not os.path.isfile(args.db_path):
+            print(f"Error: --db-path must be a KuzuDB database file (not a directory): {args.db_path}", file=sys.stderr)
             sys.exit(1)
         backend = KuzuBackend(args.db_path)
         print(f"MCP server: KuzuDB at {backend.db_path}", file=sys.stderr)

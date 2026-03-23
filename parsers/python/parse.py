@@ -695,10 +695,13 @@ def main():
     args = parser.parse_args()
     root_dir = Path(args.directory).resolve()
 
-    # Default db path: <bin-dir>/kuzu_db/<repo-name>-db (uses CMG_BIN_DIR if set)
+    # --db-path must be a directory; always generate DB file name inside it
     if args.db_path is None:
-        base_dir = os.environ.get('CMG_BIN_DIR', '.')
-        args.db_path = str(Path(base_dir) / 'kuzu_db' / f'{root_dir.name}-db')
+        db_dir = Path.cwd() / 'kuzu_db'
+    else:
+        db_dir = Path(args.db_path)
+    db_dir.mkdir(parents=True, exist_ok=True)
+    args.db_path = str(db_dir / f'{root_dir.name}-db')
 
     if not root_dir.exists():
         print(f"Directory not found: {root_dir}", file=sys.stderr)

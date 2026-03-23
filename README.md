@@ -76,22 +76,22 @@ Add to your PATH (optional):
 export PATH="$(pwd)/bin:$PATH"
 ```
 
-### Manual build (Java/Kotlin only)
-
-```bash
-./gradlew shadowJar
-# produces app/build/libs/code-mem-graph.jar
-```
-
 ## Run
 
-Parse your project with a single command. The graph database is created automatically at `./kuzu_db/<project-name>-db`.
+Parse your project with a single command. The graph database is created automatically at `./kuzu_db/<project-name>-db` in the current working directory for all languages (Java, JS, Python), unless you specify a different directory with `--db-path`.
+
 
 ### Java / Kotlin
 
 ```bash
+
+
+# Specify database directory (recommended):
+cmg-java /path/to/java/project --db-path ./kuzu_db
+# The database file will be created as ./kuzu_db/<project-name>-db
+
+# Or let it default to ./kuzu_db in current directory:
 cmg-java /path/to/java/project
-cmg-java /path/to/kotlin/project
 
 # Force a specific language
 cmg-java /path/to/project -l kotlin
@@ -105,6 +105,12 @@ The tool auto-detects the source root by looking for `src/main/java`, then `src`
 ### JavaScript / React / TypeScript
 
 ```bash
+
+# Specify database directory (recommended):
+cmg-js /path/to/react/app --db-path ./kuzu_db
+# The database file will be created as ./kuzu_db/<repo-name>-db
+
+# Or let it default to ./kuzu_db in current directory:
 cmg-js /path/to/react/app
 
 # Clear existing graph before writing
@@ -114,56 +120,29 @@ cmg-js /path/to/react/app --clear
 ### Python
 
 ```bash
+
+# Specify database directory (recommended):
+cmg-python /path/to/flask/app --db-path ./kuzu_db
+# The database file will be created as ./kuzu_db/<repo-name>-db
+
+# Or let it default to ./kuzu_db in current directory:
 cmg-python /path/to/flask/app
 
 # Clear existing graph before writing
 cmg-python /path/to/flask/app --clear
 ```
 
-### Using Neo4j instead of KuzuDB
-
-Start Neo4j:
+### MCP Server
 
 ```bash
-docker run -d --name neo4j \
-  -p 7474:7474 -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/changeme \
-  neo4j:5
-```
 
-Then pass `--backend neo4j`:
-
-```bash
-cmg-java   /path/to/project    -b neo4j --neo4j-password changeme
-cmg-js     /path/to/react/app  --backend neo4j --neo4j-password changeme
-cmg-python /path/to/flask/app  --backend neo4j --neo4j-password changeme
-```
-
-## MCP Server
-
-The built-in MCP server lets AI assistants (VS Code Copilot, Claude Desktop, etc.) query your code graph over the Model Context Protocol.
-
-### Start
-
-```bash
 # KuzuDB (default)
-cmg-mcp --db-path ./kuzu_db/my-project-db
+cmg-mcp --db-path ./kuzu_db/<project-name>-db
+# (You must specify the full database file path. This is required.)
 
 # Neo4j
 cmg-mcp --backend neo4j --neo4j-uri bolt://localhost:7687 --neo4j-password changeme
 ```
-
-### Available tools
-
-| Tool | Description |
-|------|-------------|
-| `query` | Run a read-only Cypher query against the code graph |
-| `get_schema` | List all node types, relationship types, and properties |
-| `summary` | Node and relationship counts |
-| `search_nodes` | Find nodes by name pattern and optional type (e.g. `*Service*`) |
-| `get_callers` | Find all callers of a method/function |
-| `get_callees` | Find all methods/functions called by a given method |
-| `get_class_hierarchy` | EXTENDS/IMPLEMENTS tree for a class |
 | `get_control_flow` | CFG edges for a method |
 | `get_data_flow` | DATA_FLOW edges for a method/variable |
 
@@ -307,7 +286,7 @@ cmg-python /path/to/flask/app  --backend json > graph.json
 ```
 Usage: code-mem-graph [-hV] [--incremental] [-b=<backend>] [-l=<language>]
                   [-c=<configPath>] [--cp=<classpath>]
-                  [--kuzu-db=<kuzuDbPath>] [--neo4j-database=<neo4jDatabase>]
+                  [--db-path=<dbPath>] [--neo4j-database=<neo4jDatabase>]
                   [--neo4j-password=<neo4jPassword>] [--neo4j-uri=<neo4jUri>]
                   [--neo4j-user=<neo4jUser>] <sourcePath> [COMMAND]
 
@@ -318,7 +297,7 @@ Usage: code-mem-graph [-hV] [--incremental] [-b=<backend>] [-l=<language>]
   -c, --config=<configPath>    Path to config file (default: ./application.yaml)
       --incremental            Only re-parse changed files
       --cp, --classpath=...    Additional classpath entries (comma-separated)
-      --kuzu-db=<kuzuDbPath>   KuzuDB database directory
+      --db-path=<dbPath>       KuzuDB database directory
       --neo4j-uri=<neo4jUri>   Neo4j connection URI
       --neo4j-user=<neo4jUser> Neo4j username
       --neo4j-password=...     Neo4j password
@@ -335,7 +314,7 @@ Commands:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--backend` | `kuzu` | `kuzu`, `neo4j`, or `json` |
-| `--db-path` | `./kuzu_db/<repo-name>-db` | KuzuDB database directory |
+| `--db-path` | `./kuzu_db/<repo-name>-db` | KuzuDB database directory (relative to current directory if not given) |
 | `--clear` | off | Clear existing graph before writing |
 | `--extensions` | varies | Comma-separated file extensions (JS only) |
 | `--neo4j-uri` | `bolt://localhost:7687` | Neo4j connection URI |

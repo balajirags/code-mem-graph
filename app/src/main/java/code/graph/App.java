@@ -58,7 +58,7 @@ public class App implements Callable<Integer> {
     @Option(names = {"--neo4j-database"}, description = "Neo4j database name")
     private String neo4jDatabase;
 
-    @Option(names = {"--kuzu-db"}, description = "KuzuDB database directory")
+    @Option(names = {"--db-path"}, description = "KuzuDB database directory")
     private String kuzuDbPath;
 
     @Option(names = {"--classpath", "--cp"}, description = "Additional classpath entries (JARs or directories of JARs). Comma-separated.")
@@ -84,7 +84,9 @@ public class App implements Callable<Integer> {
         if (neo4jUser == null) neo4jUser = config.getNeo4jUsername();
         if (neo4jPassword == null) neo4jPassword = config.getNeo4jPassword();
         if (neo4jDatabase == null) neo4jDatabase = config.getNeo4jDatabase();
-        if (kuzuDbPath == null) kuzuDbPath = config.getKuzuDbPath();
+        if (kuzuDbPath == null) {
+            kuzuDbPath = config.getKuzuDbPath();
+        }
 
         // Validate source path
         if (!Files.isDirectory(sourcePath)) {
@@ -92,22 +94,23 @@ public class App implements Callable<Integer> {
             return 1;
         }
 
-        // Derive database name from project directory and always use kuzu_db/<project-name>-db
+        // Derive database name from project directory and always use <db-path>/<project-name>-db
         String projectName = sourcePath.toAbsolutePath().normalize().getFileName().toString();
         if (neo4jDatabase == null || neo4jDatabase.equals(config.getNeo4jDatabase())) {
             if ("neo4j".equals(config.getNeo4jDatabase())) {
                 neo4jDatabase = projectName;
             }
         }
-        // Always use kuzu_db/<project-name>-db for KuzuDB, rooted under CMG_BIN_DIR if set
-        String binDir = System.getenv("CMG_BIN_DIR");
-        java.nio.file.Path kuzuDir = binDir != null
-                ? java.nio.file.Path.of(binDir, "kuzu_db")
-                : java.nio.file.Path.of("kuzu_db");
-        if (!java.nio.file.Files.exists(kuzuDir)) {
-            java.nio.file.Files.createDirectories(kuzuDir);
+        java.nio.file.Path dbDir;
+        if (kuzuDbPath == null || kuzuDbPath.isEmpty()) {
+            dbDir = java.nio.file.Path.of("kuzu_db");
+        } else {
+            dbDir = java.nio.file.Path.of(kuzuDbPath);
         }
-        kuzuDbPath = kuzuDir.resolve(projectName + "-db").toString();
+        if (!java.nio.file.Files.exists(dbDir)) {
+            java.nio.file.Files.createDirectories(dbDir);
+        }
+        kuzuDbPath = dbDir.resolve(projectName + "-db").toString();
 
         // Detect modules (or single project) and build combined classpath
         List<Path> modules = detectModules(sourcePath);

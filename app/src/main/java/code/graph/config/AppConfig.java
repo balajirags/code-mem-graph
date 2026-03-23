@@ -44,7 +44,7 @@ public class AppConfig {
         String neo4jUsername = "neo4j";
         String neo4jPassword = "123456789";
         String neo4jDatabase = "neo4j";
-        String kuzuDbPath = "./code-mem-graph-db";
+        String kuzuDbPath = "./kuzu_db";
 
         Path resolved = configPath != null ? configPath : Path.of(DEFAULT_CONFIG_FILE);
         if (Files.isRegularFile(resolved)) {
